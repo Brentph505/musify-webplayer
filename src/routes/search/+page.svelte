@@ -12,6 +12,11 @@
     function handleAlbumClick(albumId: string) {
         goto(`/album/${albumId}`);
     }
+
+    // New function to handle artist clicks
+    function handleArtistClick(artistId: string) {
+        goto(`/artist/${artistId}`);
+    }
 </script>
 
 <div class="search-page">
@@ -26,7 +31,7 @@
                         <h2>Artists</h2>
                         <div class="grid-container">
                             {#each results.artists.results as artist (artist.id)}
-                                <div class="card">
+                                <div class="card" on:click={() => handleArtistClick(artist.id)} role="link" tabindex="0">
                                     <img
                                         src={artist.image?.[artist.image.length - 1]?.url ||
                                             'https://via.placeholder.com/150'}

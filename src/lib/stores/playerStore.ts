@@ -19,6 +19,7 @@ export type PlayerState = {
     isShuffling: boolean; // Is shuffle mode active?
     shuffledQueue: SongForPlayer[]; // The currently shuffled list of songs
     shuffledQueueIndex: number; // Current index in the shuffled queue
+    loopMode: 'none' | 'all' | 'one'; // NEW: loop mode state
 };
 
 const initialPlayerState: PlayerState = {
@@ -30,6 +31,7 @@ const initialPlayerState: PlayerState = {
     isShuffling: false,
     shuffledQueue: [],
     shuffledQueueIndex: -1,
+    loopMode: 'none', // NEW: default to no loop
 };
 
 // Helper function for Fisher-Yates (Knuth) shuffle algorithm
@@ -49,16 +51,30 @@ export const playerStore = {
     subscribe: player.subscribe,
 
     startPlaying: (song: SongForPlayer) => {
-        player.update(state => ({
-            ...state,
-            currentSong: song,
-            isPlaying: true,
-            progress: 0, // Reset progress when a new song starts
-            // When a new song is explicitly started, disable shuffle and clear its queue
-            isShuffling: false,
-            shuffledQueue: [],
-            shuffledQueueIndex: -1
-        }));
+        player.update(state => {
+            // When a new song is started manually, shuffle mode is maintained,
+            // and the queue is rebuilt around the selected song.
+            if (state.isShuffling) {
+                const otherSongs = state.recommendations.filter(s => s.id !== song.id);
+                const newShuffledQueue = [song, ...shuffleArray(otherSongs)];
+                return {
+                    ...state,
+                    currentSong: song,
+                    isPlaying: true,
+                    progress: 0,
+                    shuffledQueue: newShuffledQueue,
+                    shuffledQueueIndex: 0
+                };
+            }
+
+            // Default behavior if not shuffling
+            return {
+                ...state,
+                currentSong: song,
+                isPlaying: true,
+                progress: 0,
+            };
+        });
     },
 
     pausePlaying: () => {
@@ -81,20 +97,24 @@ export const playerStore = {
     setRecommendations: (songs: SongForPlayer[]) => {
         player.update(state => {
             console.log(`playerStore: Received ${songs.length} new recommendations.`);
+            const newState = { ...state, recommendations: songs };
             // If shuffle is active, re-shuffle the new recommendations
             if (state.isShuffling) {
-                const newShuffledQueue = shuffleArray(songs);
-                return {
-                    ...state,
-                    recommendations: songs,
-                    shuffledQueue: newShuffledQueue,
-                    shuffledQueueIndex: -1 // Reset index, next auto-play will start from beginning
-                };
+                let tempRecommendations = [...songs];
+                const current = state.currentSong;
+
+                if (current && songs.some(s => s.id === current.id)) {
+                    // If current song is in the new list, keep it at the front of the shuffle
+                    tempRecommendations = tempRecommendations.filter(s => s.id !== current.id);
+                    newState.shuffledQueue = [current, ...shuffleArray(tempRecommendations)];
+                    newState.shuffledQueueIndex = 0;
+                } else {
+                    newState.shuffledQueue = shuffleArray(tempRecommendations);
+                    // If there's no current song, or it's not in the new list, start from the top
+                    newState.shuffledQueueIndex = -1;
+                }
             }
-            return {
-                ...state,
-                recommendations: songs
-            };
+            return newState;
         });
     },
 
@@ -106,8 +126,16 @@ export const playerStore = {
             let newShuffledQueueIndex: number = -1;
 
             if (newIsShuffling && state.recommendations.length > 0) {
-                newShuffledQueue = shuffleArray(state.recommendations);
-                newShuffledQueueIndex = 0; // Start from the beginning of the shuffled list
+                let tempRecommendations = [...state.recommendations];
+                const current = state.currentSong;
+                // If a song is playing, make it the first song in the new shuffled queue
+                if (current) {
+                    tempRecommendations = tempRecommendations.filter(s => s.id !== current.id);
+                    newShuffledQueue = [current, ...shuffleArray(tempRecommendations)];
+                } else {
+                    newShuffledQueue = shuffleArray(tempRecommendations);
+                }
+                newShuffledQueueIndex = 0;
                 console.log('playerStore: Shuffle enabled. Shuffled queue created.');
             } else {
                 console.log('playerStore: Shuffle disabled.');
@@ -122,37 +150,83 @@ export const playerStore = {
         });
     },
 
-    // New: Play the next song from the shuffled queue
-    playNextShuffledSong: () => {
+    // NEW: Toggle loop mode
+    toggleLoopMode: () => {
         player.update(state => {
-            if (!state.isShuffling || state.shuffledQueue.length === 0) {
-                console.log('playerStore: Not in shuffle mode or shuffled queue is empty. Stopping playback.');
-                return { ...state, isPlaying: false, progress: 0 }; // Stop playback
+            let newLoopMode: 'none' | 'all' | 'one' = 'all';
+            if (state.loopMode === 'all') newLoopMode = 'one';
+            if (state.loopMode === 'one') newLoopMode = 'none';
+            console.log(`playerStore: Loop mode set to ${newLoopMode}`);
+            return { ...state, loopMode: newLoopMode };
+        });
+    },
+
+    // NEW: Generic function to play the next song, respecting shuffle and loop modes
+    playNextSong: () => {
+        player.update(state => {
+            if (!state.currentSong) return { ...state, isPlaying: false };
+
+            // Handle shuffle mode
+            if (state.isShuffling) {
+                if (state.shuffledQueue.length === 0) return { ...state, isPlaying: false };
+                let nextIndex = state.shuffledQueueIndex + 1;
+
+                if (nextIndex >= state.shuffledQueue.length) {
+                    if (state.loopMode === 'all') {
+                        console.log('playerStore: End of shuffled queue, reshuffling for loop.');
+                        const newQueue = shuffleArray(state.recommendations);
+                        const nextSong = newQueue[0];
+                        if (!nextSong) return { ...state, isPlaying: false };
+                        return { ...state, currentSong: nextSong, progress: 0, isPlaying: true, shuffledQueue: newQueue, shuffledQueueIndex: 0 };
+                    }
+                    return { ...state, isPlaying: false }; // Stop if not looping
+                }
+                const nextSong = state.shuffledQueue[nextIndex];
+                return { ...state, currentSong: nextSong, progress: 0, isPlaying: true, shuffledQueueIndex: nextIndex };
             }
 
-            let nextIndex = state.shuffledQueueIndex + 1;
-            // If end of queue, re-shuffle and loop back to start
-            if (nextIndex >= state.shuffledQueue.length) {
-                console.log('playerStore: End of shuffled queue reached. Re-shuffling recommendations.');
-                // Re-shuffle original recommendations to ensure a fresh set
-                state.shuffledQueue = shuffleArray(state.recommendations);
-                nextIndex = 0; // Start from the beginning of the newly shuffled list
+            // Handle sequential mode
+            const currentIndex = state.recommendations.findIndex(song => song.id === state.currentSong?.id);
+            if (currentIndex === -1) return { ...state, isPlaying: false };
+            let nextIndex = currentIndex + 1;
+
+            if (nextIndex >= state.recommendations.length) {
+                if (state.loopMode === 'all') {
+                    nextIndex = 0; // Loop back to the start
+                } else {
+                    return { ...state, isPlaying: false }; // Stop at the end of the list
+                }
+            }
+            const nextSong = state.recommendations[nextIndex];
+            return { ...state, currentSong: nextSong, progress: 0, isPlaying: true };
+        });
+    },
+
+    // NEW: Function to play the previous song
+    playPreviousSong: () => {
+        player.update(state => {
+            if (!state.currentSong) return state;
+
+            // Handle shuffle mode
+            if (state.isShuffling) {
+                if (state.shuffledQueue.length === 0) return state;
+                let prevIndex = state.shuffledQueueIndex - 1;
+                if (prevIndex < 0) {
+                    prevIndex = state.shuffledQueue.length - 1; // Wrap around to the end
+                }
+                const prevSong = state.shuffledQueue[prevIndex];
+                return { ...state, currentSong: prevSong, progress: 0, isPlaying: true, shuffledQueueIndex: prevIndex };
             }
 
-            const nextSong = state.shuffledQueue[nextIndex];
-            if (nextSong) {
-                console.log(`playerStore: Playing next shuffled song: ${nextSong.name}`);
-                return {
-                    ...state,
-                    currentSong: nextSong,
-                    isPlaying: true, // Auto-play next song
-                    progress: 0,
-                    shuffledQueueIndex: nextIndex
-                };
-            } else {
-                console.log('playerStore: No next song available in shuffled queue after re-shuffle. Stopping playback.');
-                return { ...state, isPlaying: false, progress: 0, shuffledQueueIndex: -1 };
+            // Handle sequential mode
+            const currentIndex = state.recommendations.findIndex(song => song.id === state.currentSong?.id);
+            if (currentIndex === -1) return state;
+            let prevIndex = currentIndex - 1;
+            if (prevIndex < 0) {
+                prevIndex = state.recommendations.length - 1; // Wrap around to the end
             }
+            const prevSong = state.recommendations[prevIndex];
+            return { ...state, currentSong: prevSong, progress: 0, isPlaying: true };
         });
     }
 };

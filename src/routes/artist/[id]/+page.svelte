@@ -3,6 +3,9 @@
     import { goto } from '$app/navigation';
     import { playerStore, type SongForPlayer } from '$lib/stores/playerStore.js';
     import Play from 'lucide-svelte/icons/play';
+    import Heart from 'lucide-svelte/icons/heart';
+    import MoreHorizontal from 'lucide-svelte/icons/more-horizontal';
+    import UserPlus from 'lucide-svelte/icons/user-plus';
 
     export let data: PageData;
 
@@ -10,22 +13,19 @@
     $: topSongs = data.topSongs;
     $: topAlbums = data.topAlbums;
 
-    // Define a type for the downloadUrl items for better type safety
     type DownloadUrlItem = {
         quality: string;
         url: string;
     };
 
-    // Helper to get the URL of the highest quality image
     function getImageUrl(images: { quality: string; url: string }[] | undefined): string {
         if (!images || images.length === 0) {
             return 'https://via.placeholder.com/300?text=No+Image';
         }
-        return images[images.length - 1].url; // Assuming last is highest quality
+        return images[images.length - 1].url;
     }
 
-    // Helper to play a song (from topSongs)
-    function playSong(songToPlay: any) { // Using 'any' for flexibility
+    function playSong(songToPlay: any) {
         if (songToPlay && songToPlay.downloadUrl && songToPlay.downloadUrl.length > 0) {
             const audioUrl =
                 songToPlay.downloadUrl.find((item: DownloadUrlItem) => item.quality === '320kbps')?.url ||
@@ -44,192 +44,257 @@
         }
     }
 
-    // NEW: Function to play the first top song of the artist
     function playArtistTopSong() {
         if (topSongs && topSongs.length > 0) {
             playSong(topSongs[0]);
         }
     }
 
-    // Function to navigate to song details page
     function handleSongClick(songId: string) {
         goto(`/song/${songId}`);
     }
 
-    // Function to navigate to album details page
     function handleAlbumClick(albumId: string) {
         goto(`/album/${albumId}`);
     }
 
-    // Handles keyboard events for accessibility on cards
-    function handleCardKeyPress(event: KeyboardEvent, id: string, type: 'song' | 'album') {
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            if (type === 'song') {
-                handleSongClick(id);
-            } else {
-                handleAlbumClick(id);
-            }
-        }
+    function formatNumber(num: number | null | undefined): string {
+        if (!num) return '0';
+        if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+        if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+        return num.toString();
     }
+
 </script>
 
-<div class="artist-detail-page">
+<div class="artist-page">
     {#if artist}
-        <div class="artist-header">
-            <!-- Playable Artist Image Section -->
-            <div
-                class="artist-image-wrapper"
-                on:click={playArtistTopSong}
-                role="button"
-                tabindex="0"
-                aria-label="Play top song from {artist.name}"
-            >
-                <img
-                    src={getImageUrl(artist.image)}
-                    alt={artist.name}
-                    class="artist-image"
-                />
-                <div class="play-overlay">
-                    <Play size={48} class="play-icon" />
+        <!-- Hero Section with Artist Image -->
+        <div class="hero-section">
+            <div class="hero-background" style="background-image: url({getImageUrl(artist.image)})"></div>
+            <div class="hero-overlay"></div>
+            <div class="hero-content">
+                <div class="artist-image-container">
+                    <img
+                        src={getImageUrl(artist.image)}
+                        alt={artist.name}
+                        class="artist-image"
+                    />
+                </div>
+                <div class="artist-info">
+                    <p class="verified-badge">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                            <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="currentColor"/>
+                        </svg>
+                        Verified Artist
+                    </p>
+                    <h1 class="artist-name">{artist.name}</h1>
+                    <div class="artist-stats">
+                        {#if artist.followerCount}
+                            <span class="stat-item">{formatNumber(artist.followerCount)} followers</span>
+                        {/if}
+                        {#if artist.dominantLanguage}
+                            <span class="separator">•</span>
+                            <span class="stat-item">{artist.dominantLanguage}</span>
+                        {/if}
+                    </div>
                 </div>
             </div>
+        </div>
 
-            <div class="artist-info">
-                <h1 class="artist-name">{artist.name}</h1>
-                {#if artist.followerCount !== null}
-                    <p class="follower-count">Followers: {artist.followerCount?.toLocaleString()}</p>
-                {/if}
-                {#if artist.dominantLanguage}
-                    <p class="dominant-language">Dominant Language: {artist.dominantLanguage}</p>
-                {/if}
-                {#if artist.bio && artist.bio.length > 0}
-                    <p class="artist-bio">{artist.bio[0].text}</p>
-                {/if}
-                <div class="action-buttons">
-                    <button class="add-button">Follow</button>
-                </div>
+        <!-- Controls Section -->
+        <div class="controls-section">
+            <div class="controls-wrapper">
+                <button class="play-button-main" on:click={playArtistTopSong} aria-label="Play artist's top songs">
+                    <Play size={24} fill="currentColor" />
+                </button>
+                <button class="follow-button" aria-label="Follow artist">
+                    <UserPlus size={16} />
+                    <span>Follow</span>
+                </button>
+                <button class="icon-button" aria-label="More options">
+                    <MoreHorizontal size={32} />
+                </button>
             </div>
         </div>
 
         <!-- Top Songs Section -->
         {#if topSongs && topSongs.length > 0}
-            <section class="top-songs-section">
-                <h2>Top Songs by {artist.name}</h2>
-                <div class="tracks-grid">
-                    {#each topSongs as song (song.id)}
+            <div class="content-section">
+                <h2 class="section-title">Popular</h2>
+                <div class="songs-list">
+                    {#each topSongs.slice(0, 5) as song, index (song.id)}
                         <div
-                            class="track-card"
+                            class="song-row"
                             on:click={() => handleSongClick(song.id)}
-                            on:keydown={(e) => handleCardKeyPress(e, song.id, 'song')}
                             role="button"
                             tabindex="0"
-                            aria-label="View song {song.name}"
+                            aria-label="Play {song.name}"
                         >
-                            <img
-                                src={getImageUrl(song.image)}
-                                alt={song.name}
-                                class="track-image"
-                            />
-                            <div class="track-info">
-                                <div class="track-title">{song.name}</div>
-                                <div class="track-artist">{song.album?.name || 'Single'}</div>
+                            <div class="song-number">
+                                <span class="number-text">{index + 1}</span>
+                                <span
+                                    class="play-icon-hover"
+                                    on:click|stopPropagation={() => playSong(song)}
+                                >
+                                    <Play size={16} fill="currentColor" />
+                                </span>
                             </div>
-                            <!-- Stop propagation to prevent card click from triggering as well -->
-                            {#if song.downloadUrl && song.downloadUrl.length > 0}
-                                <button class="play-track-button" on:click|stopPropagation={() => playSong(song)} aria-label="Play {song.name}">
-                                    <Play size={20} />
-                                </button>
-                            {/if}
+                            <div class="song-info">
+                                <img src={getImageUrl(song.image)} alt={song.name} class="song-thumbnail" />
+                                <div class="song-details">
+                                    <div class="song-name">{song.name}</div>
+                                    <div class="song-plays">
+                                        {(song as any).playCount ? formatNumber((song as any).playCount) : ''}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="song-album">{song.album?.name || 'Single'}</div>
+                            <div class="song-duration">
+                                {#if song.duration}
+                                    {Math.floor(song.duration / 60)}:{(song.duration % 60).toString().padStart(2, '0')}
+                                {/if}
+                            </div>
                         </div>
                     {/each}
                 </div>
-            </section>
+            </div>
         {/if}
 
-        <!-- Top Albums Section -->
+        <!-- Discography Section -->
         {#if topAlbums && topAlbums.length > 0}
-            <section class="top-albums-section">
-                <h2>Albums by {artist.name}</h2>
+            <div class="content-section">
+                <div class="section-header">
+                    <h2 class="section-title">Discography</h2>
+                    <button class="see-all-link">See all</button>
+                </div>
                 <div class="albums-grid">
-                    {#each topAlbums as album (album.id)}
+                    {#each topAlbums.slice(0, 6) as album (album.id)}
                         <div
                             class="album-card"
                             on:click={() => handleAlbumClick(album.id)}
-                            on:keydown={(e) => handleCardKeyPress(e, album.id, 'album')}
-                            role="link"
+                            role="button"
                             tabindex="0"
                             aria-label="View album {album.name}"
                         >
-                            <img
-                                src={getImageUrl(album.image)}
-                                alt={album.name}
-                                class="album-card-image"
-                            />
-                            <div class="album-card-info">
-                                <div class="album-card-title">{album.name}</div>
-                                <div class="album-card-year">{album.year}</div>
+                            <div class="album-image-wrapper">
+                                <img
+                                    src={getImageUrl(album.image)}
+                                    alt={album.name}
+                                    class="album-image"
+                                />
+                                <div class="album-play-overlay">
+                                    <button class="album-play-button" aria-label="Play album">
+                                        <Play size={20} fill="currentColor" />
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="album-info">
+                                <div class="album-name">{album.name}</div>
+                                <div class="album-meta">
+                                    {album.year || ''} • {album.type || 'Album'}
+                                </div>
                             </div>
                         </div>
                     {/each}
                 </div>
-            </section>
+            </div>
+        {/if}
+
+        <!-- Artist Bio Section -->
+        {#if artist.bio && artist.bio.length > 0}
+            <div class="content-section">
+                <h2 class="section-title">About</h2>
+                <div class="bio-section">
+                    <div class="bio-image">
+                        <img src={getImageUrl(artist.image)} alt={artist.name} />
+                    </div>
+                    <div class="bio-content">
+                        <div class="bio-stats">
+                            {#if artist.followerCount}
+                                <div class="bio-stat">
+                                    <div class="bio-stat-number">{formatNumber(artist.followerCount)}</div>
+                                    <div class="bio-stat-label">Followers</div>
+                                </div>
+                            {/if}
+                        </div>
+                        <p class="bio-text">{artist.bio[0].text}</p>
+                    </div>
+                </div>
+            </div>
         {/if}
 
     {:else}
-        <div class="loading-error">
+        <div class="loading">
             <p>Loading artist details...</p>
         </div>
     {/if}
 </div>
 
 <style>
-    /* Global styles and color variables from your existing pages */
     :root {
         --background-base: #121212;
         --background-elevated-base: #1a1a1a;
         --background-elevated-highlight: #282828;
         --text-base: #ffffff;
         --text-subdued: #a7a7a7;
-        --primary: #1ed760; /* Spotify green */
+        --primary: #1ed760;
         --primary-hover: #169c46;
-        --accent: #1db954; /* Another green shade */
+        --accent: #1db954;
     }
 
-    .artist-detail-page {
-        padding: 24px;
+    .artist-page {
+        background-color: var(--background-base);
+        min-height: 100vh;
         color: var(--text-base);
-        max-width: 1200px;
-        margin: 0 auto;
     }
 
-    .artist-header {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 32px;
-        align-items: flex-end;
-        margin-bottom: 48px;
-        background: linear-gradient(to bottom, #1a1a1a, #121212);
-        padding: 32px;
-        border-radius: 8px;
-    }
-
-    .artist-image-wrapper {
+    .hero-section {
         position: relative;
-        width: 250px;
-        height: 250px;
-        border-radius: 50%; /* Make artist image round */
+        height: 400px;
         overflow: hidden;
-        box-shadow: 0 4px 60px rgba(0, 0, 0, 0.5);
-        flex-shrink: 0;
-        transition: transform 0.2s ease-in-out;
-        outline: none;
-        cursor: pointer;
     }
 
-    .artist-image-wrapper:hover,
-    .artist-image-wrapper:focus-visible {
-        transform: scale(1.02);
+    .hero-background {
+        position: absolute;
+        top: -50px;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-size: cover;
+        background-position: center;
+        filter: blur(50px);
+        opacity: 0.3;
+        transform: scale(1.1);
+    }
+
+    .hero-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: linear-gradient(180deg, rgba(18, 18, 18, 0.4) 0%, var(--background-base) 100%);
+    }
+
+    .hero-content {
+        position: relative;
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 80px 32px 24px;
+        display: flex;
+        gap: 24px;
+        align-items: flex-end;
+        height: 100%;
+    }
+
+    .artist-image-container {
+        width: 232px;
+        height: 232px;
+        flex-shrink: 0;
+        border-radius: 50%;
+        overflow: hidden;
+        box-shadow: 0 4px 60px rgba(0, 0, 0, 0.7);
     }
 
     .artist-image {
@@ -239,245 +304,430 @@
         display: block;
     }
 
-    .play-overlay {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background-color: rgba(0, 0, 0, 0.5);
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        opacity: 0;
-        transition: opacity 0.3s ease;
-    }
-
-    .artist-image-wrapper:hover .play-overlay,
-    .artist-image-wrapper:focus-visible .play-overlay {
-        opacity: 1;
-    }
-
-    .play-icon {
-        color: var(--primary);
-        filter: drop-shadow(0 0 8px rgba(29, 185, 84, 0.6));
-    }
-
     .artist-info {
         flex: 1;
-        min-width: 250px;
+        padding-bottom: 8px;
+    }
+
+    .verified-badge {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        margin-bottom: 12px;
+        color: var(--primary);
     }
 
     .artist-name {
-        font-size: 3.5em; /* Larger font for artist name */
-        font-weight: bold;
+        font-size: 96px;
+        font-weight: 900;
+        line-height: 1;
         margin: 0 0 16px 0;
-        line-height: 1.2;
+        letter-spacing: -0.04em;
+    }
+
+    .artist-stats {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 500;
+    }
+
+    .stat-item {
         color: var(--text-base);
     }
 
-    .follower-count, .dominant-language {
-        font-size: 1.1em;
+    .separator {
         color: var(--text-subdued);
-        margin-bottom: 8px;
     }
 
-    .artist-bio {
-        font-size: 1em;
-        color: var(--text-subdued);
-        margin-top: 20px;
-        max-width: 600px;
-        line-height: 1.5;
+    .controls-section {
+        background: linear-gradient(rgba(0, 0, 0, 0.6) 0, var(--background-base) 100%);
+        padding: 24px 32px;
     }
 
-    .action-buttons {
-        margin-top: 24px;
+    .controls-wrapper {
+        max-width: 1400px;
+        margin: 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 16px;
     }
 
-    .add-button {
-        padding: 12px 24px;
-        border-radius: 500px;
+    .play-button-main {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background-color: var(--primary);
         border: none;
-        font-size: 1em;
-        font-weight: bold;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         cursor: pointer;
-        transition: transform 0.2s ease-in-out;
-        background-color: var(--background-elevated-highlight);
-        color: var(--text-base);
+        transition: all 0.2s;
+        color: #000;
+    }
+
+    .play-button-main:hover {
+        transform: scale(1.06);
+        background-color: var(--primary-hover);
+    }
+
+    .follow-button {
+        padding: 8px 24px;
+        border-radius: 500px;
         border: 1px solid var(--text-subdued);
+        background: transparent;
+        color: var(--text-base);
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
     }
 
-    .add-button:hover {
-        background-color: #535353;
-        transform: scale(1.05);
+    .follow-button:hover {
+        transform: scale(1.04);
+        border-color: var(--text-base);
     }
 
-    .top-songs-section, .top-albums-section {
-        margin-top: 48px;
-        background-color: var(--background-elevated-base);
-        padding: 32px;
-        border-radius: 8px;
+    .icon-button {
+        background: none;
+        border: none;
+        color: var(--text-subdued);
+        cursor: pointer;
+        padding: 8px;
+        transition: color 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
-    .top-songs-section h2, .top-albums-section h2 {
-        font-size: 2em;
-        margin-bottom: 24px;
+    .icon-button:hover {
         color: var(--text-base);
     }
 
-    .tracks-grid, .albums-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 24px;
+    .content-section {
+        padding: 0 32px 48px;
+        max-width: 1400px;
+        margin: 0 auto;
     }
 
-    /* Styles for song cards (reused from song detail page) */
-    .track-card {
-        background-color: var(--background-elevated-highlight);
-        border-radius: 8px;
-        padding: 16px;
+    .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+    }
+
+    .section-title {
+        font-size: 24px;
+        font-weight: 700;
+        margin-bottom: 16px;
+    }
+
+    .see-all-link {
+        font-size: 14px;
+        color: var(--text-subdued);
+        font-weight: 700;
+        background: none;
+        border: none;
+        cursor: pointer;
+        transition: color 0.2s;
+    }
+
+    .see-all-link:hover {
+        color: var(--text-base);
+    }
+
+    .songs-list {
         display: flex;
         flex-direction: column;
-        align-items: center;
-        text-align: center;
+        gap: 8px;
+    }
+
+    .song-row {
+        display: grid;
+        grid-template-columns: 40px 1fr 2fr 60px;
+        gap: 16px;
+        padding: 8px 16px;
+        border-radius: 4px;
         cursor: pointer;
         transition: background-color 0.2s;
+        align-items: center;
+    }
+
+    .song-row:hover {
+        background-color: var(--background-elevated-highlight);
+    }
+
+    .song-number {
+        text-align: center;
         position: relative;
-        color: inherit;
-        font-family: inherit;
-        box-shadow: none;
-        width: 100%;
-        outline: none;
+        color: var(--text-subdued);
+        font-size: 16px;
     }
 
-    .track-card:hover,
-    .track-card:focus-visible {
-        background-color: #3e3e3e;
+    .number-text {
+        display: inline;
     }
 
-    .track-image {
-        width: 150px;
-        height: 150px;
+    .play-icon-hover {
+        display: none;
+        color: var(--text-base);
+        cursor: pointer;
+    }
+
+    .song-row:hover .number-text {
+        display: none;
+    }
+
+    .song-row:hover .play-icon-hover {
+        display: inline;
+    }
+
+    .song-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+    }
+
+    .song-thumbnail {
+        width: 40px;
+        height: 40px;
+        border-radius: 2px;
         object-fit: cover;
-        border-radius: 4px;
-        margin-bottom: 12px;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        flex-shrink: 0;
     }
 
-    .track-info {
-        flex-grow: 1;
-        width: 100%;
+    .song-details {
+        min-width: 0;
+        flex: 1;
     }
 
-    .track-title {
-        font-weight: bold;
+    .song-name {
+        font-size: 16px;
+        font-weight: 400;
+        color: var(--text-base);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        width: 100%;
-        color: var(--text-base);
         margin-bottom: 4px;
     }
 
-    .track-artist {
-        font-size: 0.9em;
+    .song-row:hover .song-name {
+        color: var(--primary);
+    }
+
+    .song-plays {
+        font-size: 14px;
         color: var(--text-subdued);
+    }
+
+    .song-album {
+        color: var(--text-subdued);
+        font-size: 14px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        width: 100%;
     }
 
-    .play-track-button {
-        position: absolute;
-        bottom: 20px;
-        right: 20px;
-        background-color: var(--primary);
-        color: #fff;
-        border: none;
-        border-radius: 50%;
-        width: 40px;
-        height: 40px;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        font-size: 1.2em;
+    .song-duration {
+        text-align: right;
+        color: var(--text-subdued);
+        font-size: 14px;
+    }
+
+    .albums-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 24px;
+    }
+
+    .album-card {
+        background-color: var(--background-elevated-base);
+        padding: 16px;
+        border-radius: 8px;
+        transition: background-color 0.3s;
         cursor: pointer;
-        opacity: 0;
-        transform: translateY(10px);
-        transition: opacity 0.3s ease, transform 0.3s ease;
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
     }
 
-    .track-card:hover .play-track-button,
-    .track-card:focus-visible .play-track-button {
+    .album-card:hover {
+        background-color: var(--background-elevated-highlight);
+    }
+
+    .album-image-wrapper {
+        position: relative;
+        margin-bottom: 16px;
+    }
+
+    .album-image {
+        width: 100%;
+        aspect-ratio: 1;
+        object-fit: cover;
+        border-radius: 4px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+
+    .album-play-overlay {
+        position: absolute;
+        bottom: 8px;
+        right: 8px;
+        opacity: 0;
+        transform: translateY(8px);
+        transition: all 0.3s;
+    }
+
+    .album-card:hover .album-play-overlay {
         opacity: 1;
         transform: translateY(0);
     }
 
-    /* Styles for album cards (similar to search results album cards) */
-    .album-card {
-        background-color: var(--background-elevated-highlight);
-        border-radius: 8px;
-        padding: 16px;
-        transition: background-color 0.2s;
+    .album-play-button {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        background-color: var(--primary);
+        border: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         cursor: pointer;
-        outline: none;
+        color: #000;
+        box-shadow: 0 8px 8px rgba(0, 0, 0, 0.3);
+        transition: all 0.2s;
     }
 
-    .album-card:hover,
-    .album-card:focus-visible {
-        background-color: #3e3e3e;
+    .album-play-button:hover {
+        transform: scale(1.06);
+        background-color: var(--primary-hover);
     }
 
-    .album-card-image {
-        width: 100%;
-        border-radius: 4px;
-        margin-bottom: 12px;
-        aspect-ratio: 1 / 1;
-        object-fit: cover;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    .album-info {
+        min-width: 0;
     }
 
-    .album-card-title {
-        font-weight: bold;
+    .album-name {
+        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 8px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        color: var(--text-base);
     }
 
-    .album-card-year {
-        font-size: 0.9rem;
+    .album-meta {
+        font-size: 14px;
         color: var(--text-subdued);
-        margin-top: 4px;
     }
 
-    .loading-error {
+    .bio-section {
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        gap: 32px;
+        background-color: var(--background-elevated-base);
+        padding: 24px;
+        border-radius: 8px;
+    }
+
+    .bio-image {
+        width: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    .bio-image img {
+        width: 100%;
+        height: auto;
+        display: block;
+    }
+
+    .bio-content {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    .bio-stats {
+        display: flex;
+        gap: 32px;
+    }
+
+    .bio-stat-number {
+        font-size: 48px;
+        font-weight: 900;
+        line-height: 1;
+        margin-bottom: 8px;
+    }
+
+    .bio-stat-label {
+        font-size: 14px;
+        color: var(--text-subdued);
+    }
+
+    .bio-text {
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--text-subdued);
+    }
+
+    .loading {
+        padding: 100px 32px;
         text-align: center;
-        margin-top: 100px;
-        font-size: 1.2em;
         color: var(--text-subdued);
+    }
+
+    @media (max-width: 1024px) {
+        .bio-section {
+            grid-template-columns: 1fr;
+        }
+
+        .song-row {
+            grid-template-columns: 40px 1fr 60px;
+        }
+
+        .song-album {
+            display: none;
+        }
     }
 
     @media (max-width: 768px) {
-        .artist-header {
+        .hero-section {
+            height: 340px;
+        }
+
+        .hero-content {
+            padding: 40px 16px 16px;
             flex-direction: column;
             align-items: center;
             text-align: center;
         }
 
-        .artist-image-wrapper {
-            width: 180px;
-            height: 180px;
+        .artist-image-container {
+            width: 192px;
+            height: 192px;
         }
 
         .artist-name {
-            font-size: 2.5em;
+            font-size: 48px;
         }
 
-        .tracks-grid, .albums-grid {
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        .controls-section {
+            padding: 16px;
+        }
+
+        .content-section {
+            padding: 0 16px 32px;
+        }
+
+        .albums-grid {
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 16px;
         }
     }
 </style>

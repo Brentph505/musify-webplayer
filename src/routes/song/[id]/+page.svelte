@@ -1,31 +1,31 @@
 <script lang="ts">
     import type { PageData } from './$types.js';
     import { playerStore, type SongForPlayer } from '$lib/stores/playerStore.js';
-    import { goto } from '$app/navigation'; // For navigating to other song pages
-    import Play from 'lucide-svelte/icons/play'; // Import the Play icon
+    import { goto } from '$app/navigation';
+    import Play from 'lucide-svelte/icons/play';
+    import Heart from 'lucide-svelte/icons/heart';
+    import MoreHorizontal from 'lucide-svelte/icons/more-horizontal';
+    import Plus from 'lucide-svelte/icons/plus';
+    import Share2 from 'lucide-svelte/icons/share-2';
 
     export let data: PageData;
 
     $: song = data.song;
     $: suggestions = data.suggestions;
-    $: otherAlbumTracks = data.otherAlbumTracks; // NEW: Get other album tracks from page data
+    $: otherAlbumTracks = data.otherAlbumTracks;
 
-    // Define a type for the downloadUrl items for better type safety
     type DownloadUrlItem = {
         quality: string;
         url: string;
     };
 
-    // Helper to get the URL of the highest quality image
     function getImageUrl(images: { quality: string; url: string }[] | undefined): string {
         if (!images || images.length === 0) {
             return 'https://via.placeholder.com/300?text=No+Image';
         }
-        // Assuming the last image in the array is typically the highest quality
         return images[images.length - 1].url;
     }
 
-    // Helper to format duration from seconds to MM:SS (API returns duration in seconds)
     function formatDuration(durationInSeconds: number | null): string {
         if (durationInSeconds === null || isNaN(durationInSeconds)) {
             return '--:--';
@@ -35,7 +35,6 @@
         return `${minutes}:${seconds.toString().padStart(2, '0')}`;
     }
 
-    // Reusable function to play any song (main song, suggestion, or other album track)
     function playSong(songToPlay: any) {
         if (songToPlay && songToPlay.downloadUrl && songToPlay.downloadUrl.length > 0) {
             const audioUrl =
@@ -55,20 +54,17 @@
         }
     }
 
-    // Function to handle clicking a suggestion or other album track card to navigate
     function handleTrackClick(trackId: string) {
         goto(`/song/${trackId}`);
     }
 
-    // Handles keyboard events for accessibility on track cards
-    function handleTrackKeyPress(event: KeyboardEvent, trackId: string) {
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            handleTrackClick(trackId);
-        }
+    function formatNumber(num: number | null | undefined): string {
+        if (!num) return '0';
+        if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+        if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+        return num.toString();
     }
 
-    // Reactive statement to update the player store with recommendations
     $: if (suggestions && suggestions.length > 0) {
         const mappedSuggestions: SongForPlayer[] = suggestions.map((s: any) => ({
             id: s.id,
@@ -83,395 +79,643 @@
     }
 </script>
 
-<div class="song-detail-page">
+<div class="song-page">
     {#if song}
-        <div class="song-header">
-            <!-- Playable Cover Image Section -->
-            <div
-                class="song-image-wrapper"
-                on:click={() => playSong(song)}
-                role="button"
-                tabindex="0"
-                aria-label="Play {song.name}"
-            >
-                <img src={getImageUrl(song.image)} alt={song.name} class="song-image" />
-                <div class="play-overlay">
-                    <Play size={48} class="play-icon" />
+        <!-- Hero Section -->
+        <div class="hero-section">
+            <div class="hero-background" style="background-image: url({getImageUrl(song.image)})"></div>
+            <div class="hero-overlay"></div>
+            <div class="hero-content">
+                <div class="song-cover-large">
+                    <img
+                        src={getImageUrl(song.image)}
+                        alt={song.name}
+                        class="cover-image"
+                    />
                 </div>
-            </div>
-
-            <div class="song-info">
-                <p class="song-type">{song.type?.toUpperCase() || 'SONG'}</p>
-                <h1 class="song-title">{song.name}</h1>
-                {#if song.artists?.primary?.length}
-                    <p class="song-artists">
-                        {#each song.artists.primary as artist, i}
-                            <a href="/artist/{artist.id}" class="artist-link">{artist.name}</a>{#if i < song.artists.primary.length - 1}, {/if}
-                        {/each}
-                    </p>
-                {/if}
-                {#if song.album?.name}
-                    <p class="song-album">Album: <a href="/album/{song.album.id}" class="album-link">{song.album.name}</a></p>
-                {/if}
-                <div class="song-meta">
-                    {#if song.year}<span class="meta-item">Year: {song.year}</span>{/if}
-                    {#if song.language}<span class="meta-item">Language: {song.language}</span>{/if}
-                    {#if song.duration !== null}<span class="meta-item">Duration: {formatDuration(song.duration)}</span>{/if}
-                    {#if song.playCount !== null}<span class="meta-item">Plays: {song.playCount?.toLocaleString()}</span>{/if}
-                </div>
-                <div class="action-buttons">
-                    <button class="add-button">Add to Playlist</button>
+                <div class="song-info">
+                    <p class="song-type">{song.type?.toUpperCase() || 'SONG'}</p>
+                    <h1 class="song-title">{song.name}</h1>
+                    <div class="song-meta">
+                        {#if song.artists?.primary?.length}
+                            <div class="artists-list">
+                                {#each song.artists.primary as artist, i}
+                                    <a href="/artist/{artist.id}" class="artist-link">{artist.name}</a>{#if i < song.artists.primary.length - 1}, {/if}
+                                {/each}
+                            </div>
+                        {/if}
+                        {#if song.album?.name}
+                            <span class="separator">•</span>
+                            <a href="/album/{song.album.id}" class="album-link">{song.album.name}</a>
+                        {/if}
+                        {#if song.year}
+                            <span class="separator">•</span>
+                            <span>{song.year}</span>
+                        {/if}
+                        {#if song.duration !== null}
+                            <span class="separator">•</span>
+                            <span>{formatDuration(song.duration)}</span>
+                        {/if}
+                        {#if song.playCount}
+                            <span class="separator">•</span>
+                            <span>{formatNumber(song.playCount)} plays</span>
+                        {/if}
+                        {#if song.language}
+                            <span class="separator">•</span>
+                            <span class="language-tag">{song.language}</span>
+                        {/if}
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- NEW: Other Tracks from Album section -->
+        <!-- Controls Section -->
+        <div class="controls-section">
+            <div class="controls-wrapper">
+                <button class="play-button-main" on:click={() => playSong(song)} aria-label="Play {song.name}">
+                    <Play size={24} fill="currentColor" />
+                </button>
+                <button class="icon-button heart-button" aria-label="Like song">
+                    <Heart size={32} />
+                </button>
+                <button class="icon-button" aria-label="Add to playlist">
+                    <Plus size={32} />
+                </button>
+                <button class="icon-button" aria-label="Share">
+                    <Share2 size={28} />
+                </button>
+                <button class="icon-button" aria-label="More options">
+                    <MoreHorizontal size={32} />
+                </button>
+            </div>
+        </div>
+
+        <!-- Other Tracks from Album -->
         {#if otherAlbumTracks && otherAlbumTracks.length > 0}
-            <section class="album-tracks-section">
-                <h2>More from {song.album?.name || 'this Album'}</h2>
-                <div class="tracks-grid">
-                    {#each otherAlbumTracks as albumTrack (albumTrack.id)}
+            <div class="content-section">
+                <div class="section-header">
+                    <h2 class="section-title">More from {song.album?.name || 'this Album'}</h2>
+                    <a href="/album/{song.album?.id}" class="see-all-link">See all</a>
+                </div>
+                <div class="tracks-list">
+                    {#each otherAlbumTracks.slice(0, 5) as track, index (track.id)}
                         <div
-                            class="track-card"
-                            on:click={() => handleTrackClick(albumTrack.id)}
-                            on:keydown={(e) => handleTrackKeyPress(e, albumTrack.id)}
+                            class="track-row"
+                            on:click={() => handleTrackClick(track.id)}
                             role="button"
                             tabindex="0"
-                            aria-label="View details for {albumTrack.name}"
+                            aria-label="Play {track.name}"
                         >
-                            <img
-                                src={getImageUrl(albumTrack.image)}
-                                alt={albumTrack.name}
-                                class="track-image"
-                            />
-                            <div class="track-info">
-                                <div class="track-title">{albumTrack.name}</div>
-                                <div class="track-artist">{albumTrack.artists?.primary?.[0]?.name || 'Unknown Artist'}</div>
+                            <div class="track-number">
+                                <span class="number-text">{index + 1}</span>
+                                <span
+                                    class="play-icon-hover"
+                                    on:click|stopPropagation={() => playSong(track)}
+                                >
+                                    <Play size={16} fill="currentColor" />
+                                </span>
                             </div>
-                            <button class="play-track-button" on:click|stopPropagation={() => playSong(albumTrack)} aria-label="Play {albumTrack.name}">
-                                <Play size={20} />
-                            </button>
+                            <div class="track-info">
+                                <img src={getImageUrl(track.image)} alt={track.name} class="track-thumbnail" />
+                                <div class="track-details">
+                                    <div class="track-name">{track.name}</div>
+                                    <div class="track-artist">{track.artists?.primary?.[0]?.name || 'Unknown Artist'}</div>
+                                </div>
+                            </div>
+                            <div class="track-duration">
+                                {formatDuration(track.duration)}
+                            </div>
                         </div>
                     {/each}
                 </div>
-            </section>
+            </div>
         {/if}
 
-        <!-- Lyrics section -->
+        <!-- Lyrics Section -->
         {#if song.hasLyrics && song.lyricsId}
-            <section class="lyrics-section">
-                <h2>Lyrics</h2>
-                <p>Lyrics functionality not yet implemented. (Lyrics ID: {song.lyricsId})</p>
-            </section>
+            <div class="content-section">
+                <h2 class="section-title">Lyrics</h2>
+                <div class="lyrics-placeholder">
+                    <p>Lyrics functionality coming soon...</p>
+                </div>
+            </div>
         {/if}
 
-        <!-- Suggestions section -->
+        <!-- Suggestions Section -->
         {#if suggestions && suggestions.length > 0}
-            <section class="suggestions-section">
-                <h2>More Like This</h2>
+            <div class="content-section">
+                <h2 class="section-title">Recommended</h2>
                 <div class="suggestions-grid">
-                    {#each suggestions as suggestedSong (suggestedSong.id)}
+                    {#each suggestions.slice(0, 6) as suggestedSong (suggestedSong.id)}
                         <div
-                            class="track-card"
+                            class="suggestion-card"
                             on:click={() => handleTrackClick(suggestedSong.id)}
-                            on:keydown={(e) => handleTrackKeyPress(e, suggestedSong.id)}
                             role="button"
                             tabindex="0"
-                            aria-label="View details for {suggestedSong.name}"
+                            aria-label="View {suggestedSong.name}"
                         >
-                            <img
-                                src={getImageUrl(suggestedSong.image)}
-                                alt={suggestedSong.name}
-                                class="track-image"
-                            />
-                            <div class="track-info">
-                                <div class="track-title">{suggestedSong.name}</div>
-                                <div class="track-artist">{suggestedSong.artists?.primary?.[0]?.name || 'Unknown Artist'}</div>
+                            <div class="suggestion-image-wrapper">
+                                <img
+                                    src={getImageUrl(suggestedSong.image)}
+                                    alt={suggestedSong.name}
+                                    class="suggestion-image"
+                                />
+                                <div class="suggestion-play-overlay">
+                                    <button 
+                                        class="suggestion-play-button" 
+                                        on:click|stopPropagation={() => playSong(suggestedSong)}
+                                        aria-label="Play {suggestedSong.name}"
+                                    >
+                                        <Play size={20} fill="currentColor" />
+                                    </button>
+                                </div>
                             </div>
-                            <button class="play-track-button" on:click|stopPropagation={() => playSong(suggestedSong)} aria-label="Play {suggestedSong.name}">
-                                <Play size={20} />
-                            </button>
+                            <div class="suggestion-info">
+                                <div class="suggestion-name">{suggestedSong.name}</div>
+                                <div class="suggestion-artist">{suggestedSong.artists?.primary?.[0]?.name || 'Unknown Artist'}</div>
+                            </div>
                         </div>
                     {/each}
                 </div>
-            </section>
+            </div>
         {/if}
 
     {:else}
-        <div class="loading-error">
+        <div class="loading">
             <p>Loading song details...</p>
         </div>
     {/if}
 </div>
 
 <style>
-    .song-detail-page {
-        padding: 24px;
-        color: #fff;
-        max-width: 1200px;
-        margin: 0 auto;
+    :root {
+        --background-base: #121212;
+        --background-elevated-base: #1a1a1a;
+        --background-elevated-highlight: #282828;
+        --text-base: #ffffff;
+        --text-subdued: #a7a7a7;
+        --primary: #1ed760;
+        --primary-hover: #169c46;
+        --accent: #1db954;
     }
 
-    .song-header {
+    .song-page {
+        background-color: var(--background-base);
+        min-height: 100vh;
+        color: var(--text-base);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    .hero-section {
+        position: relative;
+        padding: 80px 32px 24px;
+        overflow: hidden;
         display: flex;
-        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .hero-background {
+        position: absolute;
+        top: -50px;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: linear-gradient(180deg, rgba(18, 18, 18, 0.6) 0%, var(--background-base) 100%);
+    }
+
+    .hero-content {
+        position: relative;
+        width: 100%;
+        max-width: 1400px;
+        display: flex;
         gap: 32px;
         align-items: flex-end;
-        margin-bottom: 48px;
-        background: linear-gradient(to bottom, #1a1a1a, #121212);
-        padding: 32px;
-        border-radius: 8px;
     }
 
-    .song-image-wrapper {
-        position: relative;
-        width: 250px;
-        height: 250px;
-        cursor: pointer;
-        border-radius: 8px;
-        overflow: hidden; /* Ensure overlay stays within bounds */
+    .song-cover-large {
+        width: 232px;
+        height: 232px;
+        flex-shrink: 0;
         box-shadow: 0 4px 60px rgba(0, 0, 0, 0.5);
-        flex-shrink: 0; /* Prevent it from shrinking */
-        transition: transform 0.2s ease-in-out;
-        outline: none; /* Remove default focus outline */
+        border-radius: 4px;
+        overflow: hidden;
     }
 
-    .song-image-wrapper:hover,
-    .song-image-wrapper:focus-visible { /* Add focus-visible for keyboard users */
-        transform: scale(1.02);
-    }
-
-    .song-image {
+    .cover-image {
         width: 100%;
         height: 100%;
         object-fit: cover;
-        display: block; /* Remove extra space below image */
+        display: block;
     }
-
-    .play-overlay {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background-color: rgba(0, 0, 0, 0.5); /* Semi-transparent black overlay */
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        opacity: 0; /* Hidden by default */
-        transition: opacity 0.3s ease;
-    }
-
-    .song-image-wrapper:hover .play-overlay,
-    .song-image-wrapper:focus-visible .play-overlay {
-        opacity: 1; /* Show on hover/focus */
-    }
-
-    .play-icon {
-        color: #1DB954; /* Spotify green */
-        filter: drop-shadow(0 0 8px rgba(29, 185, 84, 0.6));
-    }
-
 
     .song-info {
         flex: 1;
-        min-width: 250px;
+        padding-bottom: 8px;
     }
 
     .song-type {
-        font-size: 0.9em;
-        font-weight: bold;
-        color: #b3b3b3;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
         margin-bottom: 8px;
+        color: var(--text-base);
     }
 
     .song-title {
-        font-size: 3em;
-        font-weight: bold;
+        font-size: 64px;
+        font-weight: 900;
+        line-height: 1.1;
         margin: 0 0 16px 0;
-        line-height: 1.2;
-    }
-
-    .song-artists, .song-album {
-        font-size: 1.1em;
-        color: #b3b3b3;
-        margin-bottom: 8px;
-    }
-
-    .artist-link, .album-link {
-        color: #fff;
-        text-decoration: none;
-        font-weight: bold;
-    }
-
-    .artist-link:hover, .album-link:hover {
-        text-decoration: underline;
+        letter-spacing: -0.04em;
     }
 
     .song-meta {
         display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
         flex-wrap: wrap;
-        gap: 16px;
-        font-size: 0.9em;
-        color: #b3b3b3;
-        margin-top: 16px;
     }
 
-    .meta-item {
-        background-color: #282828;
-        padding: 4px 12px;
-        border-radius: 20px;
+    .artists-list {
+        display: inline;
     }
 
-    .action-buttons {
-        margin-top: 24px;
+    .artist-link {
+        color: var(--text-base);
+        text-decoration: none;
+        font-weight: 700;
+        transition: color 0.2s;
+    }
+
+    .artist-link:hover {
+        color: var(--primary);
+        text-decoration: underline;
+    }
+
+    .album-link {
+        color: var(--text-base);
+        text-decoration: none;
+        transition: color 0.2s;
+    }
+
+    .album-link:hover {
+        color: var(--primary);
+        text-decoration: underline;
+    }
+
+    .separator {
+        color: var(--text-subdued);
+    }
+
+    .controls-section {
+        padding: 24px 32px;
         display: flex;
-        gap: 16px;
+        justify-content: center;
     }
 
-    .add-button {
-        padding: 12px 24px;
-        border-radius: 500px;
-        border: none;
-        font-size: 1em;
-        font-weight: bold;
-        cursor: pointer;
-        transition: transform 0.2s ease-in-out;
-        background-color: #3e3e3e;
-        color: #fff;
-    }
-
-    .add-button:hover {
-        background-color: #535353;
-    }
-
-    .lyrics-section, .suggestions-section, .album-tracks-section { /* Added .album-tracks-section */
-        margin-top: 48px;
-        background-color: #181818;
-        padding: 32px;
-        border-radius: 8px;
-    }
-
-    .lyrics-section h2, .suggestions-section h2, .album-tracks-section h2 { /* Added .album-tracks-section h2 */
-        font-size: 2em;
-        margin-bottom: 24px;
-        color: #fff;
-    }
-
-    .suggestions-grid, .tracks-grid { /* Combined for similar styling */
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    .controls-wrapper {
+        width: 100%;
+        max-width: 1400px;
+        display: flex;
+        align-items: center;
         gap: 24px;
     }
 
-    .track-card { /* Unified styling for suggestion and album track cards */
-        background-color: #282828;
-        border-radius: 8px;
-        padding: 16px;
+    .play-button-main {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background-color: var(--primary);
+        border: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: all 0.2s;
+        color: #000;
+    }
+
+    .play-button-main:hover {
+        transform: scale(1.06);
+        background-color: var(--primary-hover);
+    }
+
+    .icon-button {
+        background: none;
+        border: none;
+        color: var(--text-subdued);
+        cursor: pointer;
+        padding: 8px;
+        transition: color 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .icon-button:hover {
+        color: var(--text-base);
+    }
+
+    .heart-button:hover {
+        color: var(--primary);
+    }
+
+    .language-tag {
+        text-transform: capitalize;
+    }
+
+    .content-section {
+        padding: 16px 32px 48px;
+        max-width: 1400px;
+        margin: 0 auto;
+    }
+
+    .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+    }
+
+    .section-title {
+        font-size: 24px;
+        font-weight: 700;
+        margin-bottom: 16px;
+    }
+
+    .see-all-link {
+        font-size: 14px;
+        color: var(--text-subdued);
+        font-weight: 700;
+        text-decoration: none;
+        transition: color 0.2s;
+    }
+
+    .see-all-link:hover {
+        color: var(--text-base);
+    }
+
+    .tracks-list {
         display: flex;
         flex-direction: column;
-        align-items: center;
-        text-align: center;
+        gap: 8px;
+    }
+
+    .track-row {
+        display: grid;
+        grid-template-columns: 40px 1fr 60px;
+        gap: 16px;
+        padding: 8px 16px;
+        border-radius: 4px;
         cursor: pointer;
         transition: background-color 0.2s;
+        align-items: center;
+    }
+
+    .track-row:hover {
+        background-color: var(--background-elevated-highlight);
+    }
+
+    .track-number {
+        text-align: center;
         position: relative;
-        color: inherit;
-        font-family: inherit;
-        box-shadow: none;
-        width: 100%;
-        outline: none;
+        color: var(--text-subdued);
+        font-size: 14px;
     }
 
-    .track-card:hover,
-    .track-card:focus-visible {
-        background-color: #3e3e3e;
+    .number-text {
+        display: inline;
     }
 
-    .track-image { /* Unified styling for suggestion and album track images */
-        width: 150px;
-        height: 150px;
+    .play-icon-hover {
+        display: none;
+        color: var(--text-base);
+        cursor: pointer;
+    }
+
+    .track-row:hover .number-text {
+        display: none;
+    }
+
+    .track-row:hover .play-icon-hover {
+        display: inline;
+    }
+
+    .track-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+    }
+
+    .track-thumbnail {
+        width: 40px;
+        height: 40px;
+        border-radius: 2px;
         object-fit: cover;
-        border-radius: 4px;
-        margin-bottom: 12px;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        flex-shrink: 0;
     }
 
-    .track-info { /* Unified styling for suggestion and album track info */
-        flex-grow: 1;
-        width: 100%;
+    .track-details {
+        min-width: 0;
+        flex: 1;
     }
 
-    .track-title { /* Unified styling for suggestion and album track titles */
-        font-weight: bold;
+    .track-name {
+        font-size: 16px;
+        font-weight: 400;
+        color: var(--text-base);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        width: 100%;
-        color: #fff;
         margin-bottom: 4px;
     }
 
-    .track-artist { /* Unified styling for suggestion and album track artists */
-        font-size: 0.9em;
-        color: #b3b3b3;
+    .track-row:hover .track-name {
+        color: var(--primary);
+    }
+
+    .track-artist {
+        font-size: 14px;
+        color: var(--text-subdued);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        width: 100%;
     }
 
-    .play-track-button { /* Unified styling for play buttons on cards */
-        position: absolute;
-        bottom: 20px;
-        right: 20px;
-        background-color: #1DB954;
-        color: #fff;
-        border: none;
-        border-radius: 50%;
-        width: 40px;
-        height: 40px;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        font-size: 1.2em;
+    .track-duration {
+        text-align: right;
+        color: var(--text-subdued);
+        font-size: 14px;
+    }
+
+    .lyrics-placeholder {
+        background-color: var(--background-elevated-base);
+        padding: 48px;
+        border-radius: 8px;
+        text-align: center;
+        color: var(--text-subdued);
+    }
+
+    .suggestions-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 24px;
+    }
+
+    .suggestion-card {
+        background-color: var(--background-elevated-base);
+        padding: 16px;
+        border-radius: 8px;
+        transition: background-color 0.3s;
         cursor: pointer;
-        opacity: 0;
-        transform: translateY(10px);
-        transition: opacity 0.3s ease, transform 0.3s ease;
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
     }
 
-    .track-card:hover .play-track-button,
-    .track-card:focus-visible .play-track-button {
+    .suggestion-card:hover {
+        background-color: var(--background-elevated-highlight);
+    }
+
+    .suggestion-image-wrapper {
+        position: relative;
+        margin-bottom: 16px;
+    }
+
+    .suggestion-image {
+        width: 100%;
+        aspect-ratio: 1;
+        object-fit: cover;
+        border-radius: 4px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+
+    .suggestion-play-overlay {
+        position: absolute;
+        bottom: 8px;
+        right: 8px;
+        opacity: 0;
+        transform: translateY(8px);
+        transition: all 0.3s;
+    }
+
+    .suggestion-card:hover .suggestion-play-overlay {
         opacity: 1;
         transform: translateY(0);
     }
 
-    .loading-error {
+    .suggestion-play-button {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        background-color: var(--primary);
+        border: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        color: #000;
+        box-shadow: 0 8px 8px rgba(0, 0, 0, 0.3);
+        transition: all 0.2s;
+    }
+
+    .suggestion-play-button:hover {
+        transform: scale(1.06);
+        background-color: var(--primary-hover);
+    }
+
+    .suggestion-info {
+        min-width: 0;
+    }
+
+    .suggestion-name {
+        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 8px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .suggestion-artist {
+        font-size: 14px;
+        color: var(--text-subdued);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .loading {
+        padding: 100px 32px;
         text-align: center;
-        margin-top: 100px;
-        font-size: 1.2em;
-        color: #b3b3b3;
+        color: var(--text-subdued);
     }
 
     @media (max-width: 768px) {
-        .song-header {
+        .hero-background {
+            display: none;
+        }
+
+        .hero-section {
+            padding: 64px 16px 24px;
+        }
+
+        .hero-content {
             flex-direction: column;
             align-items: center;
             text-align: center;
+            gap: 24px;
         }
 
-        .song-image-wrapper {
-            width: 200px;
-            height: 200px;
+        .song-cover-large {
+            width: 280px;
+            height: 280px;
         }
 
         .song-title {
-            font-size: 2.5em;
+            font-size: 40px;
+        }
+        
+        .song-meta {
+            justify-content: center;
         }
 
-        .suggestions-grid, .tracks-grid {
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        .controls-section {
+            padding: 24px 16px;
+        }
+
+        .controls-wrapper {
+            gap: 16px;
+        }
+
+        .content-section {
+            padding: 16px 16px 32px;
+        }
+
+        .details-grid {
+            grid-template-columns: 1fr;
+            gap: 16px;
+        }
+
+        .track-row {
+            grid-template-columns: 30px 1fr 50px;
+            gap: 12px;
+            padding: 8px;
+        }
+
+        .track-thumbnail {
+            width: 32px;
+            height: 32px;
+        }
+
+        .suggestions-grid {
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 16px;
+        }
+        
+        .suggestion-play-button {
+            width: 40px;
+            height: 40px;
         }
     }
 </style>

@@ -18,7 +18,10 @@
 
     // New exports for Generic Reverb (Additional Reverb)
     export let reverbEnabled: boolean; // For the generic reverb
-    export let reverbAmount: number;   // For the generic reverb slider
+    export let reverbMix: number; // RENAMED from reverbAmount
+    export let reverbDecay: number; // NEW
+    export let reverbDamping: number; // NEW
+    export let reverbPreDelay: number; // NEW
     export let reverbType: string = 'hall'; // New: reverb type (hall, plate, room, cathedral)
 
     let irDropdownOpen: boolean = false; // State for custom IR dropdown visibility
@@ -93,15 +96,9 @@
         eqPresetDropdownOpen = false; // Close dropdown after selection
     }
 
-    // Impulse Response Reverb (Convolver) Mix update handler (no change)
-    function updateConvolverMix(mixValue: number) {
-        convolverMix = mixValue;
-    }
+    // Impulse Response Reverb (Convolver) Mix update handler (no change) - REMOVED, bind:value is sufficient
 
-    // Generic Reverb Amount update handler (no change)
-    function updateReverbAmount(amountValue: number) {
-        reverbAmount = amountValue;
-    }
+    // Generic Reverb Amount update handler (no change) - REMOVED, bind:value is sufficient
 
     // Function to extract just the filename for display (no change)
     function getFilenameFromUrl(url: string): string {
@@ -264,7 +261,6 @@
                                 max="1"
                                 step="0.01"
                                 bind:value={convolverMix}
-                                on:input={(e) => updateConvolverMix((e.target as HTMLInputElement).valueAsNumber)}
                                 class="horizontal-slider"
                             />
                             <span class="control-value">{(convolverMix * 100).toFixed(0)}%</span>
@@ -307,18 +303,52 @@
 
                     {#if reverbEnabled}
                         <div class="slider-control">
-                            <span class="control-label">Amount:</span>
+                            <span class="control-label">Mix:</span>
                             <input
                                 type="range"
-                                id="generic-reverb-amount"
                                 min="0"
                                 max="1"
                                 step="0.01"
-                                bind:value={reverbAmount}
-                                on:input={(e) => updateReverbAmount((e.target as HTMLInputElement).valueAsNumber)}
+                                bind:value={reverbMix}
                                 class="horizontal-slider"
                             />
-                            <span class="control-value">{(reverbAmount * 100).toFixed(0)}%</span>
+                            <span class="control-value">{(reverbMix * 100).toFixed(0)}%</span>
+                        </div>
+                        <div class="slider-control">
+                            <span class="control-label">Decay:</span>
+                            <input
+                                type="range"
+                                min="0"
+                                max="0.95"
+                                step="0.01"
+                                bind:value={reverbDecay}
+                                class="horizontal-slider"
+                            />
+                            <span class="control-value">{(reverbDecay * 100).toFixed(0)}%</span>
+                        </div>
+                        <div class="slider-control">
+                            <span class="control-label">Damping:</span>
+                            <input
+                                type="range"
+                                min="500"
+                                max="15000"
+                                step="100"
+                                bind:value={reverbDamping}
+                                class="horizontal-slider"
+                            />
+                            <span class="control-value">{reverbDamping.toFixed(0)}Hz</span>
+                        </div>
+                        <div class="slider-control">
+                            <span class="control-label">Pre-delay:</span>
+                            <input
+                                type="range"
+                                min="0"
+                                max="0.2"
+                                step="0.001"
+                                bind:value={reverbPreDelay}
+                                class="horizontal-slider"
+                            />
+                            <span class="control-value">{(reverbPreDelay * 1000).toFixed(0)}ms</span>
                         </div>
                     {/if}
                 </div>

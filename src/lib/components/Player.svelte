@@ -16,7 +16,7 @@
     import Eq from './Eq.svelte'; // Import the Eq component
 
     // Ensure PlayerState and SongForPlayer are exported from here
-    import { playerStore, type PlayerState, type SongForPlayer } from '$lib/stores/playerStore';
+    import { playerStore, type PlayerState, type SongForPlayer } from '$lib/stores/playerStore.js';
 
     let audioElement: HTMLAudioElement; // Reference to the HTMLAudioElement
     let currentSong: SongForPlayer | null = $playerStore.currentSong; // Allow null for when no song is playing
@@ -56,14 +56,20 @@
     let availableIrs: string[] = []; // List of public URLs for IR files
     let selectedIrUrl: string | null = null; // Currently selected IR file URL
 
-    // New Generic Reverb Nodes and State
+    // --- New "Valhalla-style" DSP Reverb Nodes and State ---
     let genericReverbEnabled: boolean = false;
-    let genericReverbAmount: number = 0.2; // A general amount for the reverb effect (0.0 to 1.0)
-    let genericReverbDelay: DelayNode;
-    let genericReverbFeedbackGain: GainNode; // For feedback loop
-    let genericReverbOutputGain: GainNode; // To control this reverb's final output level
-    let genericReverbType: string = 'hall'; // Default to 'hall', ensure it's `string` to match Eq.svelte
-    let genericReverbFilterNode: BiquadFilterNode; // Filter for the generic reverb feedback loop
+    let genericReverbMix: number = 0.2;
+    let genericReverbDecay: number = 0.6; // Controls feedback/sustain
+    let genericReverbDamping: number = 6000; // Low-pass filter frequency for damping
+    let genericReverbPreDelay: number = 0.02; // Pre-delay in seconds
+    let genericReverbType: string = 'hall';
+
+    // Core Reverb Nodes
+    let genericReverbPreDelayNode: DelayNode;
+    let genericReverbOutputGain: GainNode;
+    let combFilters: { delay: DelayNode; feedback: GainNode; filter: BiquadFilterNode }[] = [];
+    let allPassFilters: BiquadFilterNode[] = [];
+    let combMergerNode: GainNode;
 
     // Analyser for potential future visualization (still present)
     let analyserNode: AnalyserNode;
@@ -101,9 +107,21 @@
                         genericReverbEnabled = settings.genericReverbEnabled;
                         console.log('Loaded genericReverbEnabled:', genericReverbEnabled);
                     }
-                    if (typeof settings.genericReverbAmount === 'number') {
-                        genericReverbAmount = settings.genericReverbAmount;
-                        console.log('Loaded genericReverbAmount:', genericReverbAmount);
+                    if (typeof settings.genericReverbMix === 'number') {
+                        genericReverbMix = settings.genericReverbMix;
+                        console.log('Loaded genericReverbMix:', genericReverbMix);
+                    }
+                    if (typeof settings.genericReverbDecay === 'number') {
+                        genericReverbDecay = settings.genericReverbDecay;
+                        console.log('Loaded genericReverbDecay:', genericReverbDecay);
+                    }
+                    if (typeof settings.genericReverbDamping === 'number') {
+                        genericReverbDamping = settings.genericReverbDamping;
+                        console.log('Loaded genericReverbDamping:', genericReverbDamping);
+                    }
+                    if (typeof settings.genericReverbPreDelay === 'number') {
+                        genericReverbPreDelay = settings.genericReverbPreDelay;
+                        console.log('Loaded genericReverbPreDelay:', genericReverbPreDelay);
                     }
                     if (typeof settings.genericReverbType === 'string') {
                         genericReverbType = settings.genericReverbType;
@@ -131,7 +149,10 @@
                 convolverMix = 0.3; // Default mix
                 selectedIrUrl = null; // No IR selected by default
                 genericReverbEnabled = false;
-                genericReverbAmount = 0.2; // Default generic reverb amount
+                genericReverbMix = 0.2; // Default generic reverb mix
+                genericReverbDecay = 0.6; // Default decay
+                genericReverbDamping = 6000; // Default damping
+                genericReverbPreDelay = 0.02; // Default pre-delay
                 genericReverbType = 'hall'; // Default generic reverb type
             }
         }
@@ -145,7 +166,10 @@
                 convolverMix,
                 selectedIrUrl,
                 genericReverbEnabled,
-                genericReverbAmount,
+                genericReverbMix,
+                genericReverbDecay,
+                genericReverbDamping,
+                genericReverbPreDelay,
                 genericReverbType,
                 loopMode,
                 isShuffling,
@@ -158,54 +182,43 @@
 
     // Function to configure generic reverb based on type
     function configureGenericReverb(type: string) {
-        if (!genericReverbDelay || !genericReverbFeedbackGain || !genericReverbFilterNode) {
+        // This function now acts as a preset loader for the user-controllable parameters.
+        // The core delay times of the reverb architecture are fixed.
+        if (!combFilters.length) {
             console.warn('Generic reverb nodes not initialized yet for configuration.');
             return;
         }
 
-        // Reset filter gain for types that don't use it
-        genericReverbFilterNode.gain.value = 0;
-
+        // These types now act as presets for the user-controllable parameters
         switch (type) {
+            case 'room':
+                genericReverbDecay = 0.5;
+                genericReverbDamping = 8000;
+                break;
             case 'hall':
-                genericReverbDelay.delayTime.value = 0.4; // Longer initial delay
-                genericReverbFilterNode.type = 'lowpass';
-                genericReverbFilterNode.frequency.value = 8000; // Bright hall, some high-end damping
-                genericReverbFilterNode.Q.value = 0.5;
+                genericReverbDecay = 0.7;
+                genericReverbDamping = 5000;
                 break;
             case 'plate':
-                genericReverbDelay.delayTime.value = 0.05; // Shorter, denser initial delay
-                genericReverbFilterNode.type = 'highpass'; // More metallic/bright
-                genericReverbFilterNode.frequency.value = 1000;
-                genericReverbFilterNode.Q.value = 0.7;
-                break;
-            case 'room':
-                genericReverbDelay.delayTime.value = 0.2; // Medium delay
-                genericReverbFilterNode.type = 'lowpass';
-                genericReverbFilterNode.frequency.value = 6000; // More damping than hall
-                genericReverbFilterNode.Q.value = 0.5;
+                genericReverbDecay = 0.8;
+                genericReverbDamping = 12000; // Plates are bright
                 break;
             case 'cathedral':
-                genericReverbDelay.delayTime.value = 0.7; // Very long initial delay
-                genericReverbFilterNode.type = 'lowpass';
-                genericReverbFilterNode.frequency.value = 4000; // Heavy damping for vast space
-                genericReverbFilterNode.Q.value = 0.3;
+                genericReverbDecay = 0.9;
+                genericReverbDamping = 3500; // Large spaces are very damped
                 break;
             case 'spring': // Approximate spring reverb characteristics
-                genericReverbDelay.delayTime.value = 0.02; // Very short delay
-                genericReverbFilterNode.type = 'peaking'; // Emphasize specific frequencies for a "boingy" sound
-                genericReverbFilterNode.frequency.value = 3000; // Peak frequency
-                genericReverbFilterNode.gain.value = 6; // Boost at this frequency
-                genericReverbFilterNode.Q.value = 8; // Narrow Q for resonance
+                genericReverbDecay = 0.85;
+                genericReverbDamping = 10000; // Springy and bright
                 break;
             default: // Default to hall if type is unrecognized
-                genericReverbDelay.delayTime.value = 0.4;
-                genericReverbFilterNode.type = 'lowpass';
-                genericReverbFilterNode.frequency.value = 8000;
-                genericReverbFilterNode.Q.value = 0.5;
+                genericReverbDecay = 0.7;
+                genericReverbDamping = 5000;
                 break;
         }
-        console.log(`Player.svelte: Generic reverb type set to "${type}" with delay: ${genericReverbDelay.delayTime.value.toFixed(2)}s`);
+        // Force an update after changing preset values
+        updateEffectsConnections();
+        console.log(`Player.svelte: Generic reverb preset set to "${type}".`);
     }
 
     // Function to load the impulse response audio file (now in Player.svelte)
@@ -242,7 +255,7 @@
     // Function to manage all effects connections based on states
     function updateEffectsConnections() {
         if (!convolverNode || !convolverDryGainNode || !convolverWetGainNode ||
-            !genericReverbDelay || !genericReverbFeedbackGain || !genericReverbOutputGain || !genericReverbFilterNode) return;
+            !genericReverbPreDelayNode || !genericReverbOutputGain || !combFilters.length) return;
 
         // --- Convolver Reverb (IR) Logic ---
         if (convolverEnabled && impulseResponseBuffer && convolverNode.buffer) {
@@ -255,11 +268,20 @@
 
         // --- Generic Reverb Logic ---
         if (genericReverbEnabled) {
-            genericReverbOutputGain.gain.value = genericReverbAmount; // Control overall output level of generic reverb
-            genericReverbFeedbackGain.gain.value = genericReverbAmount * 0.7; // Tie feedback to amount, less than 1 to prevent runaway
+            genericReverbPreDelayNode.delayTime.value = genericReverbPreDelay;
+            genericReverbOutputGain.gain.value = genericReverbMix; // Control overall output level of generic reverb
+            
+            // Update all parallel comb filters with Decay and Damping values
+            for (const comb of combFilters) {
+                comb.feedback.gain.value = genericReverbDecay;
+                comb.filter.frequency.value = genericReverbDamping;
+            }
         } else {
             genericReverbOutputGain.gain.value = 0; // Disable generic reverb output
-            genericReverbFeedbackGain.gain.value = 0; // Stop feedback in delay loop
+            // Kill the feedback loops to stop the reverb tail immediately
+            for (const comb of combFilters) {
+                comb.feedback.gain.value = 0;
+            }
         }
     }
 
@@ -300,12 +322,34 @@
         convolverWetGainNode = audioContext.createGain();
         console.log('Player.svelte onMount: Convolver and its Dry/Wet GainNodes created.');
 
-        // Create Generic Reverb Nodes (simple feedback delay)
-        genericReverbDelay = audioContext.createDelay(1.0); // 1 second max delay
-        genericReverbFeedbackGain = audioContext.createGain();
+        // --- Create Generic Reverb Nodes (Freeverb-style architecture) ---
+        genericReverbPreDelayNode = audioContext.createDelay(0.5); // Max 0.5s pre-delay
         genericReverbOutputGain = audioContext.createGain();
-        genericReverbFilterNode = audioContext.createBiquadFilter(); // Initialize the filter node
-        console.log('Player.svelte onMount: Generic Reverb (Delay, Feedback Gain, Output Gain, Filter) created.');
+        combMergerNode = audioContext.createGain();
+        combMergerNode.gain.value = 1 / 4; // Average the 4 comb filter outputs to prevent clipping
+
+        const combDelayTimes = [0.0297, 0.0371, 0.0411, 0.0437]; // Prime-based delay times in seconds
+        for (const time of combDelayTimes) {
+            const delay = audioContext.createDelay(1.0);
+            delay.delayTime.value = time;
+
+            const feedback = audioContext.createGain();
+            const filter = audioContext.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.Q.value = 0.7;
+
+            combFilters.push({ delay, feedback, filter });
+        }
+
+        const allPassFrequencies = [225, 556]; // Frequencies for all-pass diffusers
+        for (const freq of allPassFrequencies) {
+            const allpass = audioContext.createBiquadFilter();
+            allpass.type = 'allpass';
+            allpass.frequency.value = freq;
+            allPassFilters.push(allpass);
+        }
+        console.log('Player.svelte onMount: Generic Reverb (Freeverb-style) nodes created.');
+
 
         // Configure generic reverb with loaded type
         configureGenericReverb(genericReverbType); // Call to set initial parameters based on loaded type
@@ -355,15 +399,29 @@
         // 2. EQ Chain Output -> Split into multiple paths (Convolver dry/wet, Generic Reverb)
         currentAudioNode.connect(convolverDryGainNode); // Dry path for convolver mix
         currentAudioNode.connect(convolverNode);       // Wet path for convolver
-        currentAudioNode.connect(genericReverbDelay);  // Input for generic reverb
+        currentAudioNode.connect(genericReverbPreDelayNode);  // Input for generic reverb starts with pre-delay
         console.log('Player.svelte onMount: EQ output branched to Convolver dry/wet and Generic Reverb.');
 
-        // Set up generic reverb feedback loop (with filter in the loop)
-        genericReverbDelay.connect(genericReverbFeedbackGain);
-        genericReverbFeedbackGain.connect(genericReverbFilterNode); // Feedback gain -> Filter
-        genericReverbFilterNode.connect(genericReverbDelay); // Filter -> Delay (completes loop)
-        genericReverbDelay.connect(genericReverbOutputGain); // Connect delay output to its output gain
+        // Set up generic reverb routing
+        // PreDelay -> All Comb Filters
+        genericReverbPreDelayNode.connect(combMergerNode); // A bit of early reflection
+        for (const comb of combFilters) {
+            genericReverbPreDelayNode.connect(comb.delay);
 
+            // Set up feedback loop for each comb filter
+            comb.delay.connect(comb.feedback);
+            comb.feedback.connect(comb.filter);
+            comb.filter.connect(comb.delay);
+
+            // Connect comb output to the merger
+            comb.delay.connect(combMergerNode);
+        }
+
+        // Comb Merger -> Series All-Pass Filters -> Output Gain
+        combMergerNode.connect(allPassFilters[0]);
+        allPassFilters[0].connect(allPassFilters[1]);
+        allPassFilters[1].connect(genericReverbOutputGain);
+        
         // 3. All effect paths -> Analyser -> Master Gain -> Destination
         convolverDryGainNode.connect(analyserNode);   // Convolver dry path
         convolverNode.connect(convolverWetGainNode); // Convolver feeds its wet gain
@@ -442,12 +500,12 @@
 
     // Reactive statements to update audio node parameters when state changes (including new generic reverb)
     $: eqGains, filterNodes.forEach((filter, i) => { if (filter) filter.gain.value = eqGains[i]; });
-    $: convolverEnabled, convolverMix, genericReverbEnabled, genericReverbAmount, updateEffectsConnections();
+    $: convolverEnabled, convolverMix, genericReverbEnabled, genericReverbMix, genericReverbDecay, genericReverbDamping, genericReverbPreDelay, updateEffectsConnections();
     // Reactive statement for generic reverb type change
     $: genericReverbType, configureGenericReverb(genericReverbType);
 
     // Reactive statement to save settings when any of them change
-    $: eqGains, convolverEnabled, convolverMix, selectedIrUrl, genericReverbEnabled, genericReverbAmount, genericReverbType, loopMode, isShuffling, saveSettings();
+    $: eqGains, convolverEnabled, convolverMix, selectedIrUrl, genericReverbEnabled, genericReverbMix, genericReverbDecay, genericReverbDamping, genericReverbPreDelay, genericReverbType, loopMode, isShuffling, saveSettings();
 
     // Function to format duration (seconds to MM:SS)
     function formatTime(seconds: number | null): string {
@@ -478,14 +536,9 @@
             audioElement.currentTime = 0;
             audioElement.play().catch(e => console.error("Player.svelte handleEnded: Error looping single track:", e));
             playerStore.resumePlaying(); // Ensure store state reflects playing
-        } else if (isShuffling) {
-            playerStore.playNextShuffledSong(); // Store handles logic for next shuffled song
-        } else if (loopMode === 'all') {
-            playerStore.playNextSong(); // Assume playerStore.playNextSong handles looping the queue if at end
         } else {
-            // No loop, not shuffling: pause and reset progress
-            playerStore.pausePlaying();
-            playerStore.updateProgress(0);
+            // The playerStore.playNextSong() handles both shuffle and loop 'all' logic
+            playerStore.playNextSong();
         }
         console.log(`Player.svelte handleEnded: Song ended. LoopMode: ${loopMode}, Shuffling: ${isShuffling}`);
     }
@@ -562,7 +615,7 @@
     <!-- Player Controls -->
     <div class="flex flex-col items-center gap-2 md:w-full">
         <div class="flex items-center gap-4">
-            <button class="text-text-subdued hover:text-text-base" disabled={!currentSong}><SkipBack size={20} /></button>
+            <button class="text-text-subdued hover:text-text-base" on:click={playerStore.playPreviousSong} disabled={!currentSong}><SkipBack size={20} /></button>
             <button
                 class="bg-text-base text-black rounded-full p-2 hover:scale-105"
                 on:click={togglePlayPause}
@@ -574,7 +627,7 @@
                     <Play size={20} />
                 {/if}
             </button>
-            <button class="text-text-subdued hover:text-text-base" disabled={!currentSong}><SkipForward size={20} /></button>
+            <button class="text-text-subdued hover:text-text-base" on:click={playerStore.playNextSong} disabled={!currentSong}><SkipForward size={20} /></button>
         </div>
         <div class="hidden md:flex items-center gap-2 w-full max-w-2xl text-xs text-text-subdued">
             <span>{formatTime(progress)}</span>
@@ -618,7 +671,7 @@
         <button
             class="text-text-subdued hover:text-text-base"
             class:active={loopMode !== 'none'}
-            on:click={playerStore.toggleLoop}
+            on:click={playerStore.toggleLoopMode}
             aria-label="Toggle Loop Mode"
             disabled={!currentSong}
         >
@@ -666,7 +719,10 @@
             bind:availableIrs={availableIrs}
             bind:selectedIrUrl={selectedIrUrl}
             bind:reverbEnabled={genericReverbEnabled}
-            bind:reverbAmount={genericReverbAmount}
+            bind:reverbMix={genericReverbMix}
+            bind:reverbDecay={genericReverbDecay}
+            bind:reverbDamping={genericReverbDamping}
+            bind:reverbPreDelay={genericReverbPreDelay}
             bind:reverbType={genericReverbType}
         />
     </div>
