@@ -11,9 +11,10 @@
     </div>
     <main class="main-layout">
         <Navbar />
-        <div class="p-6">
+        <div>
             <slot />
         </div>
+        <div class="bottom-fade" />
     </main>
     <div class="player-layout">
         <Player />
@@ -56,10 +57,46 @@
         overflow-y: auto;
         background-color: #121212;
         border-radius: 8px;
+
+        /* NEW: Custom Scrollbar Styles */
+        /* Webkit (Chrome, Safari, Edge) */
+        &::-webkit-scrollbar {
+            width: 8px; /* Width of the scrollbar */
+            height: 8px; /* Height for horizontal scrollbar if needed */
+        }
+
+        &::-webkit-scrollbar-track {
+            background: #121212; /* Color of the scrollbar track */
+            border-radius: 10px;
+        }
+
+        &::-webkit-scrollbar-thumb {
+            background-color: #4a4a4a; /* Color of the scrollbar thumb */
+            border-radius: 10px; /* Roundness of the thumb */
+            border: 2px solid #121212; /* Padding around the thumb */
+        }
+
+        &::-webkit-scrollbar-thumb:hover {
+            background-color: #6a6a6a; /* Color of the thumb on hover */
+        }
+
+        /* Firefox (for future compatibility, though less customizable) */
+        scrollbar-width: thin; /* "auto" or "thin" */
+        scrollbar-color: #4a4a4a #121212; /* thumb color track color */
     }
 
     .player-layout {
         grid-area: player;
+    }
+
+    .bottom-fade {
+        position: sticky;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        height: 6rem; /* 96px */
+        background: linear-gradient(to top, #121212, transparent);
+        pointer-events: none;
     }
 
     @media (max-width: 768px) {

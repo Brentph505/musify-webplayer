@@ -3,6 +3,7 @@
     import { goto } from '$app/navigation';
     import { playerStore, type SongForPlayer } from '$lib/stores/playerStore.js';
     import Play from 'lucide-svelte/icons/play';
+    import Pause from 'lucide-svelte/icons/pause'; // NEW: Import Pause icon
     import Clock from 'lucide-svelte/icons/clock';
     import MoreHorizontal from 'lucide-svelte/icons/more-horizontal';
     import Heart from 'lucide-svelte/icons/heart';
@@ -25,29 +26,68 @@
         return highQuality ? highQuality.url : images[0].url;
     }
 
-    function playFirstAlbumSong() {
-        if (data.album && data.album.songs && data.album.songs.length > 0) {
-            const firstSong = data.album.songs[0];
-            if ((firstSong as any).downloadUrl && (firstSong as any).downloadUrl.length > 0) {
+    // NEW: Reactive state for album songs and player interaction
+    let albumSongsForPlayer: SongForPlayer[] = [];
+
+    $: if (data.album && data.album.songs) {
+        albumSongsForPlayer = data.album.songs
+            .filter(song => (song as any).downloadUrl && (song as any).downloadUrl.length > 0)
+            .map(song => {
                 const audioUrl =
-                    (firstSong as any).downloadUrl.find((item: DownloadUrlItem) => item.quality === '320kbps')?.url ||
-                    (firstSong as any).downloadUrl[(firstSong as any).downloadUrl.length - 1].url;
+                    (song as any).downloadUrl.find((item: DownloadUrlItem) => item.quality === '320kbps')?.url ||
+                    (song as any).downloadUrl[(song as any).downloadUrl.length - 1].url;
 
                 const artistName =
-                    firstSong.artists?.primary?.map((a: any) => a.name).join(', ') || 'Unknown Artist';
+                    song.artists?.primary?.map((a: any) => a.name).join(', ') || 'Unknown Artist';
 
-                const songForPlayer: SongForPlayer = {
-                    id: firstSong.id,
-                    name: firstSong.name,
+                return {
+                    id: song.id,
+                    name: song.name,
                     artistName: artistName,
-                    albumName: firstSong.album?.name || data.album.name || 'Unknown Album',
-                    albumImageUrl: getImageUrl(firstSong.image),
+                    albumName: song.album?.name || data.album.name || 'Unknown Album',
+                    albumImageUrl: getImageUrl(song.image),
                     audioUrl: audioUrl,
-                    duration: firstSong.duration || 0
+                    duration: song.duration || 0
                 };
-                playerStore.startPlaying(songForPlayer);
+            });
+    }
+
+    // NEW: Reactive declarations from player store
+    $: currentPlayingSongId = $playerStore.currentSong?.id;
+    $: isPlaying = $playerStore.isPlaying;
+    $: albumSongIds = new Set(albumSongsForPlayer.map(s => s.id));
+    $: playerRecommendationIds = new Set($playerStore.recommendations.map(s => s.id));
+
+    // Checks if the current album's songs are precisely the recommendations in the player
+    $: isThisAlbumLoadedInPlayer =
+        albumSongIds.size > 0 &&
+        albumSongIds.size === playerRecommendationIds.size &&
+        [...albumSongIds].every(id => playerRecommendationIds.has(id));
+
+    // True if this album is loaded in the player AND a song from it is currently playing
+    $: isAlbumCurrentlyPlaying = isPlaying && isThisAlbumLoadedInPlayer && currentPlayingSongId;
+
+    function togglePlayAlbum() {
+        if (isAlbumCurrentlyPlaying) {
+            playerStore.pausePlaying();
+        } else if (albumSongsForPlayer.length > 0) {
+            // If the album is loaded but paused, resume.
+            // Otherwise, set recommendations and start the first song.
+            if (isThisAlbumLoadedInPlayer && $playerStore.currentSong) {
+                playerStore.resumePlaying();
+            } else {
+                playerStore.setRecommendations(albumSongsForPlayer);
+                playerStore.startPlaying(albumSongsForPlayer[0]);
             }
         }
+    }
+
+    function playSpecificAlbumSong(song: SongForPlayer) {
+        // Ensure this album's songs are the current recommendations
+        if (!isThisAlbumLoadedInPlayer) {
+            playerStore.setRecommendations(albumSongsForPlayer);
+        }
+        playerStore.startPlaying(song);
     }
 
     function handleSongCardClick(songId: string) {
@@ -71,519 +111,210 @@
 
 </script>
 
-<div class="album-page">
+<div class="min-h-screen text-white bg-[#121212]">
     {#if data.album}
-        <!-- Hero Section with Gradient Background -->
-        <div class="hero-section">
-            <div class="hero-content">
-                <div class="album-cover-large">
-                    <img
-                        src={getImageUrl(data.album.image)}
-                        alt={data.album.name}
-                        class="cover-image"
-                    />
-                </div>
-                <div class="album-info">
-                    <p class="album-type">ALBUM</p>
-                    <h1 class="album-title">{data.album.name}</h1>
-                    {#if data.album.description}
-                        <p class="album-description">{data.album.description}</p>
-                    {/if}
-                    <div class="album-meta">
-                        <div class="artist-name">
-                            {#if data.album.artists?.primary}
-                                {#each data.album.artists.primary as artist, i (artist.id)}
-                                    <a href="/artist/{artist.id}" class="artist-link">{artist.name}</a>
-                                    {#if i < data.album.artists.primary.length - 1},&nbsp;{/if}
-                                {/each}
-                            {/if}
+        <!-- Hero Section -->
+        <div class="relative overflow-hidden">
+            <!-- Blurred Background Image with Gradient Overlay -->
+            <div 
+                class="absolute inset-0" 
+                style="background-image: url({getImageUrl(data.album.image)}); background-size: cover; background-position: center; filter: blur(50px); transform: scale(1.1);"
+            >
+                <div class="absolute inset-0 bg-gradient-to-b from-[#1a1a1a]/40 via-[#1a1a1a]/80 to-[#121212]"></div>
+            </div>
+            
+            <!-- Content -->
+            <div class="relative pt-12 pb-4 md:pt-16">
+                <div class="max-w-[1955px] mx-auto px-2 md:px-6">
+                    <!-- Mobile: Stacked Layout -->
+                    <div class="flex flex-col md:flex-row gap-4 md:gap-8 items-center md:items-end">
+                        <!-- Album Cover -->
+                        <div class="flex-shrink-0 w-44 h-44 md:w-[232px] md:h-[232px] shadow-2xl">
+                            <img
+                                src={getImageUrl(data.album.image)}
+                                alt={data.album.name}
+                                class="w-full h-full object-cover rounded-md"
+                                loading="lazy" 
+                            />
                         </div>
-                        {#if data.album.year}
-                            <span class="separator">•</span>
-                            <span>{data.album.year}</span>
-                        {/if}
-                        {#if data.album.songs}
-                            <span class="separator">•</span>
-                            <span>{data.album.songs.length} songs</span>
-                            <span class="separator">•</span>
-                            <span>{getTotalDuration()}</span>
-                        {/if}
+                        <div class="flex-1 min-w-0 pb-2 text-center md:text-left w-full">
+                            <p class="text-xs md:text-sm font-bold mb-1 md:mb-2 uppercase tracking-wide text-white">Album</p>
+                            <h1 class="text-xl md:text-3xl lg:text-4xl xl:text-5xl font-black mb-2 md:mb-6 break-words leading-tight">{data.album.name}</h1>
+                            {#if data.album.description}
+                                <p class="text-sm text-neutral-400 mb-3 md:mb-4 line-clamp-2">{data.album.description}</p>
+                            {/if}
+                            <div class="flex items-center gap-1 text-[11px] md:text-sm font-medium flex-wrap justify-center md:justify-start text-neutral-400">
+                                <div class="font-bold text-white">
+                                    {#if data.album.artists?.primary}
+                                        {#each data.album.artists.primary as artist, i (artist.id)}
+                                            <a href="/artist/{artist.id}" class="hover:underline">{artist.name}</a>
+                                            {#if i < data.album.artists.primary.length - 1},&nbsp;{/if}
+                                        {/each}
+                                    {/if}
+                                </div>
+                                {#if data.album.year}
+                                    <span class="mx-1">•</span>
+                                    <span>{data.album.year}</span>
+                                {/if}
+                                {#if data.album.songs}
+                                    <span class="mx-1">•</span>
+                                    <span>{data.album.songs.length} songs</span>
+                                    <span class="mx-1">•</span>
+                                    <span>{getTotalDuration()}</span>
+                                {/if}
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
         <!-- Controls Section -->
-        <div class="controls-section">
-            <div class="controls-wrapper">
-                <button class="play-button-main" on:click={playFirstAlbumSong} aria-label="Play album">
-                    <Play size={24} fill="currentColor" />
-                </button>
-                <button class="icon-button" aria-label="Like album">
-                    <Heart size={32} />
-                </button>
-                <button class="icon-button" aria-label="More options">
-                    <MoreHorizontal size={32} />
-                </button>
+        <div class="sticky top-0 z-50 bg-[#121212]/95 backdrop-blur-md border-b border-white/5">
+            <div class="py-3 md:py-4 px-2 md:px-6">
+                <div class="max-w-[1955px] mx-auto flex items-center gap-3 md:gap-8">
+                    <button 
+                        class="w-12 h-12 md:w-14 md:h-14 rounded-full bg-green-500 flex items-center justify-center hover:scale-105 hover:bg-green-400 transition-transform active:scale-100 shadow-xl text-black" 
+                        on:click={togglePlayAlbum} aria-label="Play album"
+                    >
+                        {#if isAlbumCurrentlyPlaying}
+                            <Pause size={20} fill="currentColor" class="md:w-6 md:h-6 ml-0.5" />
+                        {:else}
+                            <Play size={20} fill="currentColor" class="md:w-6 md:h-6 ml-0.5" />
+                        {/if}
+                    </button>
+                    <button class="text-neutral-400 hover:text-white transition-colors p-1.5 md:p-2 hover:scale-110 active:scale-95" aria-label="Like album">
+                        <Heart size={26} class="md:w-8 md:h-8" />
+                    </button>
+                    <button class="text-neutral-400 hover:text-white transition-colors p-1.5 md:p-2 hover:scale-110 active:scale-95" aria-label="More options">
+                        <MoreHorizontal size={26} class="md:w-8 md:h-8" />
+                    </button>
+                </div>
             </div>
         </div>
 
         <!-- Songs List -->
-        <div class="songs-section">
-            <div class="songs-header">
-                <div class="header-number">#</div>
-                <div class="header-title">Title</div>
-                <div class="header-duration">
-                    <Clock size={16} />
+        <div class="py-4 md:py-6">
+            <div class="max-w-[1955px] mx-auto px-2 md:px-6">
+                <div class="grid grid-cols-[30px_4fr_50px] md:grid-cols-[40px_1fr_60px] gap-4 px-4 py-2 text-sm text-neutral-400 border-b border-white/10">
+                    <div class="text-center">#</div>
+                    <div class="text-left">Title</div>
+                    <div class="flex justify-end pr-6">
+                        <Clock size={16} />
+                    </div>
                 </div>
-            </div>
-            
-            {#if data.album.songs && data.album.songs.length > 0}
-                <div class="songs-list">
-                    {#each data.album.songs as song, index (song.id)}
-                        <div
-                            class="song-row"
-                            on:click={() => handleSongCardClick(song.id)}
-                            on:keydown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') handleSongCardClick(song.id);
-                            }}
-                            role="button"
-                            tabindex="0"
-                            aria-label="Play {song.name}"
-                        >
-                            <div class="song-number">
-                                <span class="number-text">{index + 1}</span>
-                                <span class="play-icon-hover">
-                                    <Play size={16} fill="currentColor" />
-                                </span>
-                            </div>
-                            <div class="song-info">
-                                <img src={getImageUrl(song.image)} alt={song.name} class="song-thumbnail" />
-                                <div class="song-details">
-                                    <div class="song-name">{song.name}</div>
-                                    <div class="song-artist">
-                                        {#if song.artists?.primary}
-                                            {#each song.artists.primary as artist, i (artist.id)}
-                                                <a
-                                                    href="/artist/{artist.id}"
-                                                    class="artist-link"
-                                                    on:click|stopPropagation
-                                                >
-                                                    {artist.name}
-                                                </a>
-                                                {#if i < song.artists.primary.length - 1},&nbsp;{/if}
-                                            {/each}
-                                        {/if}
+                
+                {#if data.album.songs && data.album.songs.length > 0}
+                    <div class="flex flex-col">
+                        {#each data.album.songs as song, index (song.id)}
+                            <div
+                                class="grid grid-cols-[30px_4fr_50px] md:grid-cols-[40px_1fr_60px] gap-4 px-4 py-2 rounded hover:bg-[#282828] group cursor-pointer items-center"
+                                class:text-green-500={currentPlayingSongId === song.id}
+                                on:click={() => {
+                                    if (currentPlayingSongId === song.id) {
+                                        if (isPlaying) {
+                                            playerStore.pausePlaying();
+                                        } else {
+                                            playerStore.resumePlaying();
+                                        }
+                                    } else {
+                                        playSpecificAlbumSong(albumSongsForPlayer[index]);
+                                    }
+                                }}
+                                on:keydown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                        if (currentPlayingSongId === song.id) {
+                                            if (isPlaying) {
+                                                playerStore.pausePlaying();
+                                            } else {
+                                                playerStore.resumePlaying();
+                                            }
+                                        } else {
+                                            playSpecificAlbumSong(albumSongsForPlayer[index]);
+                                        }
+                                    }
+                                }}
+                                role="button"
+                                tabindex="0"
+                                aria-label="{currentPlayingSongId === song.id && isPlaying ? 'Pause' : 'Play'} {song.name}"
+                            >
+                                <div class="text-center relative text-neutral-400 text-sm flex items-center justify-center h-full">
+                                    {#if currentPlayingSongId === song.id && isPlaying}
+                                        <Pause size={16} fill="currentColor" class="block text-green-500" />
+                                    {:else if currentPlayingSongId === song.id && !isPlaying}
+                                        <Play size={16} fill="currentColor" class="block text-green-500" />
+                                    {:else}
+                                        <span class="block group-hover:hidden">{index + 1}</span>
+                                        <span class="hidden absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 group-hover:block">
+                                            <Play size={16} fill="currentColor" />
+                                        </span>
+                                    {/if}
+                                </div>
+                                <div class="flex items-center gap-3 min-w-0">
+                                    <img src={getImageUrl(song.image)} alt={song.name} class="w-10 h-10 rounded object-cover flex-shrink-0" loading="lazy" />
+                                    <div class="min-w-0 flex-1">
+                                        <div class="font-medium truncate text-sm md:text-base mb-1" class:text-green-500={currentPlayingSongId === song.id}>{song.name}</div>
+                                        <div class="text-xs md:text-sm text-neutral-400 truncate">
+                                            {#if song.artists?.primary}
+                                                {#each song.artists.primary as artist, i (artist.id)}
+                                                    <a href="/artist/{artist.id}" class="hover:underline text-neutral-400" on:click={(e) => {
+                                                        e.preventDefault(); // Prevent default browser navigation
+                                                        e.stopPropagation(); // Stop event from bubbling up to the song row div
+                                                        goto(`/artist/${artist.id}`); // Manually navigate using SvelteKit's goto
+                                                    }}>
+                                                        {artist.name}
+                                                    </a>
+                                                    {#if i < song.artists.primary.length - 1},&nbsp;{/if}
+                                                {/each}
+                                            {/if}
+                                        </div>
                                     </div>
                                 </div>
+                                <div class="text-right text-neutral-400 text-sm pr-6">
+                                    {song.duration ? formatDuration(song.duration) : ''}
+                                </div>
                             </div>
-                            <div class="song-duration">
-                                {song.duration ? formatDuration(song.duration) : ''}
-                            </div>
-                        </div>
-                    {/each}
-                </div>
-            {:else}
-                <p class="no-songs">No songs found for this album.</p>
-            {/if}
+                        {/each}
+                    </div>
+                {:else}
+                    <p class="py-8 text-center text-neutral-400">No songs found for this album.</p>
+                {/if}
+            </div>
         </div>
 
         <!-- Additional Info Section -->
-        <div class="info-section">
-            {#if data.album.year || data.album.language || data.album.playCount}
-                <div class="info-grid">
-                    {#if data.album.year}
-                        <div class="info-item">
-                            <div class="info-label">Release Date</div>
-                            <div class="info-value">{data.album.year}</div>
-                        </div>
-                    {/if}
-                    {#if data.album.language}
-                        <div class="info-item">
-                            <div class="info-label">Language</div>
-                            <div class="info-value">{data.album.language}</div>
-                        </div>
-                    {/if}
-                    {#if data.album.playCount}
-                        <div class="info-item">
-                            <div class="info-label">Play Count</div>
-                            <div class="info-value">{data.album.playCount.toLocaleString()}</div>
-                        </div>
-                    {/if}
-                </div>
-            {/if}
+        <div class="py-4 md:py-6">
+            <div class="max-w-[1955px] mx-auto px-2 md:px-6">
+                {#if data.album.year || data.album.language || data.album.playCount}
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8">
+                        {#if data.album.year}
+                            <div class="flex flex-col gap-1">
+                                <div class="text-xs text-neutral-400 uppercase tracking-wide">Release Date</div>
+                                <div class="text-sm font-medium text-white">{data.album.year}</div>
+                            </div>
+                        {/if}
+                        {#if data.album.language}
+                            <div class="flex flex-col gap-1">
+                                <div class="text-xs text-neutral-400 uppercase tracking-wide">Language</div>
+                                <div class="text-sm font-medium text-white">{data.album.language}</div>
+                            </div>
+                        {/if}
+                        {#if data.album.playCount}
+                            <div class="flex flex-col gap-1">
+                                <div class="text-xs text-neutral-400 uppercase tracking-wide">Play Count</div>
+                                <div class="text-sm font-medium text-white">{data.album.playCount.toLocaleString()}</div>
+                            </div>
+                        {/if}
+                    </div>
+                {/if}
+            </div>
         </div>
     {/if}
 </div>
 
 <style>
-    :root {
-        --background-base: #121212;
-        --background-elevated-base: #1a1a1a;
-        --background-elevated-highlight: #282828;
-        --text-base: #ffffff;
-        --text-subdued: #a7a7a7;
-        --primary: #1ed760;
-        --primary-hover: #169c46;
-        --accent: #1db954;
-    }
-
-    .album-page {
-        background-color: var(--background-base);
-        min-height: 100vh;
-        color: var(--text-base);
-    }
-
-    .hero-section {
-        background: linear-gradient(180deg, #1a1a1a 0%, var(--background-base) 100%);
-        padding: 80px 32px 24px;
-        position: relative;
-    }
-
-    .hero-content {
-        max-width: 1400px;
-        margin: 0 auto;
-        display: flex;
-        gap: 32px;
-        align-items: flex-end;
-    }
-
-    .album-cover-large {
-        width: 232px;
-        height: 232px;
-        flex-shrink: 0;
-        box-shadow: 0 4px 60px rgba(0, 0, 0, 0.5);
-        border-radius: 4px;
-        overflow: hidden;
-    }
-
-    .cover-image {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-    }
-
-    .album-info {
-        flex: 1;
-        padding-bottom: 8px;
-    }
-
-    .album-type {
-        font-size: 12px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        margin-bottom: 8px;
-        color: var(--text-base);
-    }
-
-    .album-title {
-        font-size: 72px;
-        font-weight: 900;
-        line-height: 1.1;
-        margin: 0 0 16px 0;
-        letter-spacing: -0.04em;
-    }
-
-    .album-description {
-        font-size: 14px;
-        color: var(--text-subdued);
-        margin-bottom: 12px;
-        line-height: 1.6;
-    }
-
-    .album-meta {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 14px;
-        flex-wrap: wrap;
-    }
-
-    .artist-link {
-        color: var(--text-subdued);
-        text-decoration: none;
-    }
-
-    .artist-link:hover {
-        text-decoration: underline;
-        color: var(--text-base);
-    }
-
-    .artist-name {
-        font-weight: 700;
-        color: var(--text-base);
-    }
-
-    .separator {
-        color: var(--text-subdued);
-    }
-
-    .controls-section {
-        background: linear-gradient(rgba(0, 0, 0, 0.6) 0, var(--background-base) 100%);
-        padding: 24px 32px;
-    }
-
-    .controls-wrapper {
-        max-width: 1400px;
-        margin: 0 auto;
-        display: flex;
-        align-items: center;
-        gap: 24px;
-    }
-
-    .play-button-main {
-        width: 56px;
-        height: 56px;
-        border-radius: 50%;
-        background-color: var(--primary);
-        border: none;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        transition: all 0.2s;
-        color: #000;
-    }
-
-    .play-button-main:hover {
-        transform: scale(1.06);
-        background-color: var(--primary-hover);
-    }
-
-    .icon-button {
-        background: none;
-        border: none;
-        color: var(--text-subdued);
-        cursor: pointer;
-        padding: 8px;
-        transition: color 0.2s;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .icon-button:hover {
-        color: var(--text-base);
-    }
-
-    .songs-section {
-        padding: 0 32px 32px;
-        max-width: 1400px;
-        margin: 0 auto;
-    }
-
-    .songs-header {
-        display: grid;
-        grid-template-columns: 40px 1fr 60px;
-        gap: 16px;
-        padding: 8px 16px;
-        border-bottom: 1px solid var(--background-elevated-highlight);
-        color: var(--text-subdued);
-        font-size: 12px;
-        font-weight: 500;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-bottom: 8px;
-    }
-
-    .header-number {
-        text-align: center;
-    }
-
-    .header-title {
-        text-align: left;
-    }
-
-    .header-duration {
-        text-align: right;
-        display: flex;
-        justify-content: flex-end;
-        align-items: center;
-    }
-
-    .songs-list {
-        display: flex;
-        flex-direction: column;
-    }
-
-    .song-row {
-        display: grid;
-        grid-template-columns: 40px 1fr 60px;
-        gap: 16px;
-        padding: 8px 16px;
-        border-radius: 4px;
-        cursor: pointer;
-        transition: background-color 0.2s;
-        align-items: center;
-    }
-
-    .song-row:hover {
-        background-color: var(--background-elevated-highlight);
-    }
-
-    .song-number {
-        text-align: center;
-        position: relative;
-        color: var(--text-subdued);
-        font-size: 14px;
-    }
-
-    .number-text {
-        display: inline;
-    }
-
-    .play-icon-hover {
-        display: none;
-        color: var(--text-base);
-    }
-
-    .song-row:hover .number-text {
-        display: none;
-    }
-
-    .song-row:hover .play-icon-hover {
-        display: inline;
-    }
-
-    .song-info {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        min-width: 0;
-    }
-
-    .song-thumbnail {
-        width: 40px;
-        height: 40px;
-        border-radius: 2px;
-        object-fit: cover;
-        flex-shrink: 0;
-    }
-
-    .song-details {
-        min-width: 0;
-        flex: 1;
-    }
-
-    .song-name {
-        font-size: 16px;
-        font-weight: 400;
-        color: var(--text-base);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        margin-bottom: 4px;
-    }
-
-    .song-row:hover .song-name {
-        color: var(--primary);
-    }
-
-    .song-artist {
-        font-size: 14px;
-        color: var(--text-subdued);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .song-artist .artist-link {
-        font-size: 14px;
-        color: var(--text-subdued);
-    }
-
-    .song-duration {
-        text-align: right;
-        color: var(--text-subdued);
-        font-size: 14px;
-    }
-
-    .no-songs {
-        padding: 32px;
-        text-align: center;
-        color: var(--text-subdued);
-    }
-
-    .info-section {
-        padding: 32px;
-        max-width: 1400px;
-        margin: 0 auto;
-    }
-
-    .info-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 24px;
-    }
-
-    .info-item {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-    }
-
-    .info-label {
-        font-size: 12px;
-        color: var(--text-subdued);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-
-    .info-value {
-        font-size: 14px;
-        color: var(--text-base);
-    }
-
-    @media (max-width: 768px) {
-        .hero-section {
-            padding: 40px 16px 16px;
-        }
-
-        .hero-content {
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-            gap: 24px;
-        }
-
-        .album-cover-large {
-            width: 192px;
-            height: 192px;
-        }
-
-        .album-title {
-            font-size: 32px;
-        }
-
-        .controls-section {
-            padding: 16px;
-        }
-
-        .songs-section {
-            padding: 0 16px 16px;
-        }
-
-        .songs-header {
-            grid-template-columns: 30px 1fr 50px;
-            gap: 8px;
-            padding: 8px;
-        }
-
-        .song-row {
-            grid-template-columns: 30px 1fr 50px;
-            gap: 8px;
-            padding: 8px;
-        }
-
-        .song-thumbnail {
-            width: 32px;
-            height: 32px;
-        }
-
-        .info-section {
-            padding: 16px;
-        }
-    }
+    /* 
+    This style block is intentionally left empty.
+    All previous styling has been migrated to Tailwind CSS classes.
+    */
 </style>

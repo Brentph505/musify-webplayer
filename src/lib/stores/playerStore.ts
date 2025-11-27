@@ -4,6 +4,7 @@ export type SongForPlayer = {
     id: string;
     name: string;
     artistName: string;
+    primaryArtistId?: string; // NEW: Add primary artist ID for navigation
     albumName: string;
     albumImageUrl: string;
     audioUrl: string;

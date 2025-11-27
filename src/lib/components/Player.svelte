@@ -5,54 +5,68 @@
     import SkipForward from 'lucide-svelte/icons/skip-forward';
     import Mic2 from 'lucide-svelte/icons/mic-2';
     import ListMusic from 'lucide-svelte/icons/list-music';
-    import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal'; // Used to toggle EQ
+    import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
     import Volume2 from 'lucide-svelte/icons/volume-2';
-    import VolumeX from 'lucide-svelte/icons/volume-x'; // For muted state
-    import Shuffle from 'lucide-svelte/icons/shuffle'; // Import Shuffle icon
-    import Repeat from 'lucide-svelte/icons/repeat'; // Import Repeat icon for loop all
-    import Repeat1 from 'lucide-svelte/icons/repeat-1'; // Import Repeat1 icon for loop one
+    import VolumeX from 'lucide-svelte/icons/volume-x';
+    import Shuffle from 'lucide-svelte/icons/shuffle';
+    import Repeat from 'lucide-svelte/icons/repeat';
+    import Repeat1 from 'lucide-svelte/icons/repeat-1';
 
     import { onMount, onDestroy } from 'svelte';
-    import Eq from './Eq.svelte'; // Import the Eq component
+    import { goto } from '$app/navigation';
+    import Eq from './Eq.svelte';
 
     import { playerStore, type PlayerState, type SongForPlayer } from '$lib/stores/playerStore.js';
-    // NEW: Import the audioEffectsStore and its types
     import { audioEffectsStore, initialEqBands, type AudioEffectsState } from '$lib/stores/audioEffectsStore.js';
 
-    let audioElement: HTMLAudioElement; // Reference to the HTMLAudioElement
+    let audioElement: HTMLAudioElement;
     
-    // PlayerStore state (playback-related)
+    // PlayerStore state
     let currentSong: SongForPlayer | null;
     let isPlaying: boolean;
     let progress: number;
     let volume: number;
-    let duration: number = 0; // Duration of the current song
+    let duration: number = 0;
     let isShuffling: boolean;
     let loopMode: 'none' | 'all' | 'one';
 
-    // AudioEffectsStore state (UI/effects-related)
-    // We subscribe to the entire store and then derive individual variables for reactivity and passing to Eq.svelte
-    let audioEffectsState: AudioEffectsState;
-    // Derive individual properties from audioEffectsState for binding to Eq.svelte and UI
-    // These will automatically update when audioEffectsStore changes
-    $: eqGains = audioEffectsState?.eqGains;
-    $: convolverEnabled = audioEffectsState?.convolverEnabled;
-    $: convolverMix = audioEffectsState?.convolverMix;
-    $: impulseResponseBuffer = audioEffectsState?.impulseResponseBuffer;
-    $: availableIrs = audioEffectsState?.availableIrs || []; // Default to empty array if not loaded yet
-    $: selectedIrUrl = audioEffectsState?.selectedIrUrl;
-    $: genericReverbEnabled = audioEffectsState?.genericReverbEnabled;
-    $: genericReverbMix = audioEffectsState?.genericReverbMix;
-    $: genericReverbDecay = audioEffectsState?.genericReverbDecay;
-    $: genericReverbDamping = audioEffectsState?.genericReverbDamping;
-    $: genericReverbPreDelay = audioEffectsState?.genericReverbPreDelay;
-    $: genericReverbType = audioEffectsState?.genericReverbType;
+    // AudioEffectsStore state
+    let audioEffectsState: AudioEffectsState | null = null;
+    $: eqGains = audioEffectsState?.eqGains ?? [];
+    $: convolverEnabled = audioEffectsState?.convolverEnabled ?? false;
+    $: convolverMix = audioEffectsState?.convolverMix ?? 0.3;
+    $: impulseResponseBuffer = audioEffectsState?.impulseResponseBuffer ?? null;
+    $: availableIrs = audioEffectsState?.availableIrs || [];
+    $: selectedIrUrl = audioEffectsState?.selectedIrUrl ?? null;
+    $: genericReverbEnabled = audioEffectsState?.genericReverbEnabled ?? false;
+    $: genericReverbMix = audioEffectsState?.genericReverbMix ?? 0.2;
+    $: genericReverbDecay = audioEffectsState?.genericReverbDecay ?? 0.6;
+    $: genericReverbDamping = audioEffectsState?.genericReverbDamping ?? 6000;
+    $: genericReverbPreDelay = audioEffectsState?.genericReverbPreDelay ?? 0.02;
+    $: genericReverbType = audioEffectsState?.genericReverbType ?? 'hall';
 
-    // Local UI state for Eq visibility, saved separately
     const PLAYER_UI_LOCAL_STORAGE_KEY = 'musify-player-ui-settings';
-    let showEq: boolean = false; // Internal state for EQ UI visibility
+    let showEq: boolean = false;
 
-    // Function to load player UI-specific settings (like EQ visibility)
+    // FADE EFFECT CONSTANT
+    const FADE_DURATION_SECONDS = 0.5; // Duration of the fade effect in seconds
+
+    // Keep track of the previously playing song to detect changes
+    let previousSongId: string | null = null;
+    let isFadingOut: boolean = false; // Flag to prevent multiple fade operations
+
+    // Visualizer state
+    let bassIntensity = 0; // Normalized 0-1
+    let animationFrameId: number;
+    let frequencyData: Uint8Array;
+
+    // Configuration for bass detection (adjust these values as needed)
+    const BASS_LOW_FREQ = 60; // Hz
+    const BASS_HIGH_FREQ = 250; // Hz
+    const BASS_BOOST = 2.0; // Increased boost for more impact
+    const BASS_SMOOTHING_FACTOR = 0.2; // Lowered for faster, "blinking" response
+    const GLOW_COLOR = 'rgba(74, 222, 128, 0.7)'; // Tailwind green-500 equivalent with alpha
+
     function loadPlayerUiSettings() {
         if (typeof window !== 'undefined' && window.localStorage) {
             const storedUiSettings = localStorage.getItem(PLAYER_UI_LOCAL_STORAGE_KEY);
@@ -69,7 +83,6 @@
         }
     }
 
-    // Function to save player UI-specific settings
     function savePlayerUiSettings() {
         if (typeof window !== 'undefined' && window.localStorage) {
             const uiSettingsToSave = { showEq };
@@ -78,11 +91,52 @@
         }
     }
 
+    function startVisualizerAnimation() {
+        if (!audioEffectsState?.analyserNode || !audioEffectsState?.audioContext) {
+            console.warn('AnalyserNode or AudioContext not available for visualizer.');
+            return;
+        }
+
+        frequencyData = new Uint8Array(audioEffectsState.analyserNode.frequencyBinCount);
+        updateVisualizer();
+    }
+
+    function updateVisualizer() {
+        if (!audioEffectsState?.analyserNode || !audioEffectsState?.audioContext) {
+            cancelAnimationFrame(animationFrameId);
+            return;
+        }
+
+        audioEffectsState.analyserNode.getByteFrequencyData(frequencyData as any);
+
+        const bufferLength = audioEffectsState.analyserNode.frequencyBinCount;
+        const sampleRate = audioEffectsState.audioContext.sampleRate;
+
+        // Calculate frequency bin indices for bass range
+        const bassLowIndex = Math.floor(BASS_LOW_FREQ / (sampleRate / 2) * bufferLength);
+        const bassHighIndex = Math.floor(BASS_HIGH_FREQ / (sampleRate / 2) * bufferLength);
+
+        let sumBass = 0;
+        for (let i = bassLowIndex; i <= bassHighIndex; i++) {
+            sumBass += frequencyData[i];
+        }
+
+        const averageBass = sumBass / (bassHighIndex - bassLowIndex + 1);
+        
+        // Normalize the averageBass value (0-255) and apply boost
+        let normalizedBass = (averageBass / 255) * BASS_BOOST;
+        normalizedBass = Math.max(0, Math.min(1, normalizedBass)); // Clamp between 0 and 1
+
+        // Smooth the bass intensity
+        bassIntensity = bassIntensity * BASS_SMOOTHING_FACTOR + normalizedBass * (1 - BASS_SMOOTHING_FACTOR);
+
+        animationFrameId = requestAnimationFrame(updateVisualizer);
+    }
+
+
     onMount(async () => {
-        // 1. Load player UI settings (e.g., showEq)
         loadPlayerUiSettings();
 
-        // 2. Subscribe to playerStore for playback state
         const unsubscribePlayer = playerStore.subscribe((state: PlayerState) => {
             currentSong = state.currentSong;
             isPlaying = state.isPlaying;
@@ -91,38 +145,101 @@
             isShuffling = state.isShuffling;
             loopMode = state.loopMode;
 
-            // Inform audioEffectsStore about master volume changes
-            audioEffectsStore.setMasterVolume(volume);
+            // Handle song changes and audio loading with fade effects
+            if (audioEffectsState && audioEffectsState.audioContext) {
+                // If a new song is being set (currentSong is not null and its ID is different from the previous)
+                if (currentSong && currentSong.id !== previousSongId) {
+                    const songToLoad = currentSong; // Capture song to prevent race condition with timeout
+                    // Only fade out if something was playing before and it's not the initial load or clearing
+                    if (previousSongId !== null && !audioElement.paused && !isFadingOut) {
+                        isFadingOut = true;
+                        // Fade out current audio
+                        audioEffectsStore.setMasterVolume(0.0001); // FIX: Removed second argument
+                        
+                        setTimeout(() => {
+                            // After fade out, change song source
+                            audioElement.src = songToLoad.audioUrl;
+                            audioElement.load();
+                            console.log('Player.svelte subscribe: New song src loaded for:', songToLoad.name);
+                            isFadingOut = false;
+                            
+                            // Ensure volume is set for the new song, fading in if should be playing
+                            audioEffectsStore.setMasterVolume(volume); // FIX: Removed second argument and ternary
+                            // The reactive block `$: { if (isPlaying) ... }` will handle audioElement.play()
+                        }, FADE_DURATION_SECONDS * 1000); // Wait for fade out duration
+                    } else if (!isFadingOut) { // First song, or player was paused when song changed
+                        audioElement.src = songToLoad.audioUrl;
+                        audioElement.load();
+                        console.log('Player.svelte subscribe: First song or paused when song changed, src loaded for:', songToLoad.name);
+                        // Set volume without fade-in if paused, or with fade-in if playing (handled by reactive block)
+                        audioEffectsStore.setMasterVolume(volume);
+                        // The reactive block `$: { if (isPlaying) ... }` will handle audioElement.play()
+                    }
+                } else if (!currentSong && previousSongId !== null) {
+                    // If currentSong becomes null (e.g., player cleared from external action)
+                    if (!isFadingOut) { // Ensure not already fading from a song change
+                         isFadingOut = true;
+                         audioEffectsStore.setMasterVolume(0.0001); // FIX: Removed second argument
+                         setTimeout(() => {
+                             audioElement.src = '';
+                             audioElement.load();
+                             isFadingOut = false;
+                             audioEffectsStore.setMasterVolume(volume); // Reset volume to current store volume
+                             console.log('Player.svelte subscribe: Audio source cleared with fade-out.');
+                         }, FADE_DURATION_SECONDS * 1000);
+                    } else {
+                        // If already fading due to a song change, just clear source
+                        audioElement.src = '';
+                        audioElement.load();
+                        console.log('Player.svelte subscribe: Audio source cleared during another fade.');
+                    }
+                } else if (!isFadingOut) {
+                    // If current song is the same (or initially no song) AND not in the middle of a fade-out.
+                    // This covers manual volume changes for the *same* song.
+                    audioEffectsStore.setMasterVolume(volume);
+                }
+            } else {
+                // Fallback if audioEffectsState/audioContext not ready for fading
+                if (currentSong && audioElement.src !== currentSong.audioUrl) {
+                    audioElement.src = currentSong.audioUrl;
+                    audioElement.load();
+                    console.log('Player.svelte subscribe: New song src loaded (no effects/fade):', currentSong.name);
+                } else if (!currentSong && audioElement.src) {
+                    audioElement.src = '';
+                    audioElement.load();
+                    console.log('Player.svelte subscribe: Audio source cleared (no effects/fade).');
+                }
+            }
 
-            // If currentSong changes and is not null, load its audioUrl into the HTMLAudioElement
-            if (audioElement && currentSong && audioElement.src !== currentSong.audioUrl) {
-                audioElement.src = currentSong.audioUrl;
-                audioElement.load();
-                console.log('Player.svelte subscribe: New song src loaded for:', currentSong.name);
+            previousSongId = currentSong?.id || null;
+        });
+
+        const unsubscribeAudioEffects = audioEffectsStore.subscribe(state => {
+            audioEffectsState = state;
+            // When audioEffectsState is initialized or changed, ensure master volume reflects current player store volume
+            if (audioEffectsState && audioEffectsState.audioContext && audioEffectsState.masterGainNode && !isFadingOut) {
+                audioEffectsStore.setMasterVolume(volume);
+            }
+            // Start visualizer once audioEffectsStore is initialized and has analyserNode
+            if (audioEffectsState?.analyserNode && !animationFrameId) {
+                startVisualizerAnimation();
             }
         });
 
-        // 3. Subscribe to audioEffectsStore for effect state updates
-        const unsubscribeAudioEffects = audioEffectsStore.subscribe(state => {
-            audioEffectsState = state; // Update local reactive variable
-        });
-
-        // 4. Initialize the audio effects system
-        // Pass the HTMLAudioElement and initial volume for setup
-        // Ensure audioElement is available before calling init
         if (audioElement) {
              await audioEffectsStore.init(audioElement, volume);
+             // After init, ensure the master gain value is correctly set to `volume` from the store
+             // This can happen if audioEffectsStore.init sets a default that differs from playerStore.volume
+             audioEffectsStore.setMasterVolume(volume);
         } else {
             console.error("Player.svelte: audioElement is not available on mount!");
         }
         
-        // Ensure the audio element's own volume is always maxed, so Web Audio API controls it
         if (audioElement) {
-            audioElement.volume = 1;
+            audioElement.volume = 1; // Always keep HTML5 audio volume at 1, control via Web Audio API
             console.log('Player.svelte onMount: audioElement.volume set to 1 (controlled by Web Audio API).');
         }
 
-        // 5. Add event listeners to resume AudioContext (browser policy)
         const resumeAudioContext = () => {
             if (audioEffectsState?.audioContext?.state === 'suspended') {
                 audioEffectsState.audioContext.resume().then(() => {
@@ -130,46 +247,53 @@
                 }).catch(e => console.error('Player.svelte: Error resuming AudioContext:', e));
             }
         };
-        document.addEventListener('click', resumeAudioContext);
-        document.addEventListener('keydown', resumeAudioContext);
+        document.addEventListener('click', resumeAudioContext, { passive: true });
+        document.addEventListener('keydown', resumeAudioContext, { passive: true });
 
-        // 6. Cleanup on component destroy
         onDestroy(() => {
             document.removeEventListener('click', resumeAudioContext);
             document.removeEventListener('keydown', resumeAudioContext);
             unsubscribePlayer();
             unsubscribeAudioEffects();
-            audioEffectsStore.destroy(); // Clean up AudioContext and effects state
+            audioEffectsStore.destroy();
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
         });
     });
 
-    // Reactive statement to handle song changes and play/pause
+    // Reactive block for play/pause logic
+    // This block should only control play/pause for the *currently loaded* audio source,
+    // as loading new sources and fading is handled by the subscribe block.
     $: {
-        if (audioElement && currentSong && audioEffectsState?.audioContext) {
+        if (audioElement && audioEffectsState?.audioContext && !isFadingOut) {
             if (isPlaying) {
-                // Check and resume AudioContext if suspended, then play
-                if (audioEffectsState.audioContext.state === 'suspended') {
-                    console.log('Player.svelte reactive: Attempting to resume AudioContext before playing.');
-                    audioEffectsState.audioContext.resume().then(() => {
-                        audioElement.play().catch((e: Error) => console.error("Player.svelte reactive: Error playing audio (resume then play):", e));
-                    });
+                if (currentSong) { // Only attempt to play if there's a current song
+                    if (audioEffectsState.audioContext.state === 'suspended') {
+                        console.log('Player.svelte reactive: Attempting to resume AudioContext before playing.');
+                        audioEffectsState.audioContext.resume().then(() => {
+                            audioElement.play().catch((e: Error) => console.error("Player.svelte reactive: Error playing audio (resume then play):", e));
+                        });
+                    } else {
+                        audioElement.play().catch((e: Error) => console.error("Player.svelte reactive: Error playing audio:", e));
+                    }
                 } else {
-                    audioElement.play().catch((e: Error) => console.error("Player.svelte reactive: Error playing audio:", e));
+                    // If isPlaying is true but no currentSong, pause playerStore
+                    playerStore.pausePlaying();
                 }
             } else {
                 audioElement.pause();
                 console.log('Player.svelte reactive: Audio paused.');
             }
         } else if (audioElement && !currentSong && isPlaying) {
-             // If no current song but isPlaying somehow, stop playback
+             // This covers cases where `isPlaying` is true but `currentSong` is null.
+             // It should result in pausing.
              playerStore.pausePlaying();
         }
     }
 
-    // Reactive statement to save `showEq` state when it changes
     $: showEq, savePlayerUiSettings();
 
-    // Function to format duration (seconds to MM:SS)
     function formatTime(seconds: number | null): string {
         if (seconds === null || isNaN(seconds)) return '0:00';
         const minutes = Math.floor(seconds / 60);
@@ -177,7 +301,6 @@
         return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
     }
 
-    // Event handlers for the audio element
     function handleTimeUpdate() {
         if (audioElement && currentSong) {
             playerStore.updateProgress(audioElement.currentTime);
@@ -192,14 +315,12 @@
         }
     }
 
-    // Modified handleEnded logic for loop functionality
     function handleEnded() {
         if (loopMode === 'one') {
             audioElement.currentTime = 0;
             audioElement.play().catch(e => console.error("Player.svelte handleEnded: Error looping single track:", e));
-            playerStore.resumePlaying(); // Ensure store state reflects playing
+            playerStore.resumePlaying();
         } else {
-            // The playerStore.playNextSong() handles both shuffle and loop 'all' logic
             playerStore.playNextSong();
         }
         console.log(`Player.svelte handleEnded: Song ended. LoopMode: ${loopMode}, Shuffling: ${isShuffling}`);
@@ -222,149 +343,345 @@
 
     function handleVolumeChange(event: Event) {
         const newVolume = (event.currentTarget as HTMLInputElement).valueAsNumber / 100;
-        playerStore.setVolume(newVolume); // playerStore handles its own saving
+        playerStore.setVolume(newVolume);
     }
 
     function handleProgressBarChange(event: Event) {
         if (audioElement && currentSong && duration > 0) {
             const newProgress = ((event.currentTarget as HTMLInputElement).valueAsNumber / 100) * duration;
             audioElement.currentTime = newProgress;
-            playerStore.updateProgress(newProgress); // playerStore handles its own saving
+            playerStore.updateProgress(newProgress);
         }
     }
 
     function toggleEqVisibility() {
-        showEq = !showEq; // This reactive statement will trigger savePlayerUiSettings()
+        showEq = !showEq;
         console.log('Player.svelte toggleEqVisibility: EQ UI visibility toggled to', showEq);
+    }
+
+    function navigateToSong() {
+        if (currentSong?.id) {
+            goto(`/song/${currentSong.id}`);
+        }
+    }
+
+    function navigateToArtist(event: Event) {
+        event.stopPropagation();
+        console.log('Attempting to navigate to artist:', currentSong?.artistName, 'with ID:', currentSong?.primaryArtistId);
+        if (currentSong?.primaryArtistId) {
+            goto(`/artist/${currentSong.primaryArtistId}`);
+        } else {
+            console.warn('Cannot navigate to artist: primaryArtistId is missing for the current song.');
+        }
+    }
+
+    function toggleShuffleLoopMode() {
+        if (!currentSong) return; // Disable if no song is playing
+
+        // This function cycles through three states:
+        // 1. Normal Playback (shuffle OFF, loop 'none')
+        // 2. Shuffle Mode (shuffle ON, loop 'none')
+        // 3. Loop One Mode (shuffle OFF, loop 'one')
+        // It uses playerStore.toggleShuffle() and playerStore.toggleLoopMode()
+        // assuming toggleLoopMode cycles 'none' -> 'all' -> 'one' -> 'none'.
+
+        if (isShuffling) {
+            // Currently in Shuffle Mode -> Switch to Loop One Mode
+            playerStore.toggleShuffle(); // Sets isShuffling to false
+            // Cycle loopMode to 'one'. If current loopMode is 'none', it takes two toggles.
+            playerStore.toggleLoopMode(); // 'none' -> 'all'
+            playerStore.toggleLoopMode(); // 'all' -> 'one'
+            console.log('Player.svelte: Switched from Shuffle to Loop One');
+        } else if (loopMode === 'one') {
+            // Currently in Loop One Mode -> Switch to Normal Playback
+            playerStore.toggleLoopMode(); // Sets loopMode to 'none'
+            // Shuffle should already be off, no need to toggleShuffle here.
+            console.log('Player.svelte: Switched from Loop One to Normal');
+        } else { // (loopMode === 'none' && !isShuffling), i.e., Normal Playback
+            // Currently in Normal Playback -> Switch to Shuffle Mode
+            playerStore.toggleShuffle(); // Sets isShuffling to true
+            // Loop mode should already be 'none', no action needed for loopMode.
+            console.log('Player.svelte: Switched from Normal to Shuffle');
+        }
     }
 </script>
 
-<footer
-    class="bg-black border-t border-background-elevated-base px-4 h-[90px] grid grid-cols-[1fr_auto] md:grid-cols-[1fr_2fr_1fr] items-center gap-8"
->
-    <!-- Hidden Audio Element -->
-    <audio
-        bind:this={audioElement}
-        on:timeupdate={handleTimeUpdate}
-        on:loadedmetadata={handleLoadedMetadata}
-        on:ended={handleEnded}
-        on:error={handleError}
-        preload="metadata"
-        crossorigin="anonymous"
-    ></audio>
+<!-- Hidden Audio Element -->
+<audio
+    bind:this={audioElement}
+    on:timeupdate={handleTimeUpdate}
+    on:loadedmetadata={handleLoadedMetadata}
+    on:ended={handleEnded}
+    on:error={handleError}
+    preload="metadata"
+    crossorigin="anonymous"
+></audio>
 
-    <!-- Track Info -->
-    <div class="flex items-center gap-3">
-        {#if currentSong}
-            <img src={currentSong.albumImageUrl} alt={currentSong.name} class="w-14 h-14 object-cover" />
-            <div>
-                <div class="font-semibold text-sm">{currentSong.name}</div>
-                <div class="text-xs text-text-subdued">{currentSong.artistName}</div>
-            </div>
-        {:else}
-            <div class="w-14 h-14 bg-background-elevated-base"></div>
-            <div>
-                <div class="font-semibold text-sm">No song playing</div>
-                <div class="text-xs text-text-subdued"></div>
-            </div>
-        {/if}
-    </div>
-
-    <!-- Player Controls -->
-    <div class="flex flex-col items-center gap-2 md:w-full">
-        <div class="flex items-center gap-4">
-            <button class="text-text-subdued hover:text-text-base" on:click={playerStore.playPreviousSong} disabled={!currentSong}><SkipBack size={20} /></button>
-            <button
-                class="bg-text-base text-black rounded-full p-2 hover:scale-105"
-                on:click={togglePlayPause}
-                disabled={!currentSong}
-            >
-                {#if isPlaying}
-                    <Pause size={20} />
-                {:else}
-                    <Play size={20} />
-                {/if}
-            </button>
-            <button class="text-text-subdued hover:text-text-base" on:click={playerStore.playNextSong} disabled={!currentSong}><SkipForward size={20} /></button>
-        </div>
-        <div class="hidden md:flex items-center gap-2 w-full max-w-2xl text-xs text-text-subdued">
-            <span>{formatTime(progress)}</span>
-            <div class="w-full h-1 bg-background-elevated-highlight rounded-full relative">
-                <input
-                    type="range"
-                    id="progress-slider"
-                    min="0"
-                    max="100"
-                    value={duration > 0 ? (progress / duration) * 100 : 0}
-                    on:input={handleProgressBarChange}
-                    class="absolute w-full h-full appearance-none cursor-pointer range-slider"
-                    style="--progress: {duration > 0 ? (progress / duration) * 100 : 0}%;"
-                    disabled={!currentSong}
-                />
-                <div class="h-full bg-text-base rounded-full" style="width: {duration > 0 ? (progress / duration) * 100 : 0}%"></div>
-            </div>
-            <span>{formatTime(duration || currentSong?.duration || 0)}</span>
-        </div>
-    </div>
-
-    <!-- Extra Controls -->
-    <div class="hidden md:flex justify-end items-center gap-4">
-        <button class="text-text-subdued hover:text-text-base"><Mic2 size={18} /></button>
-        <button class="text-text-subdued hover:text-text-base"><ListMusic size={18} /></button>
-        <!-- Button to toggle EQ visibility -->
-        <button class="text-text-subdued hover:text-text-base" on:click={toggleEqVisibility} aria-label="Toggle Equalizer">
-            <SlidersHorizontal size={18} />
-        </button>
-        <!-- Shuffle Button -->
-        <button
-            class="text-text-subdued hover:text-text-base shuffle-button"
-            class:active={isShuffling}
-            on:click={playerStore.toggleShuffle}
-            aria-label="Toggle Shuffle"
-            disabled={!currentSong}
-        >
-            <Shuffle size={18} />
-        </button>
-        <!-- Loop Button -->
-        <button
-            class="text-text-subdued hover:text-text-base repeat-button"
-            class:active={loopMode !== 'none'}
-            on:click={playerStore.toggleLoopMode}
-            aria-label="Toggle Loop Mode"
-            disabled={!currentSong}
-        >
-            {#if loopMode === 'one'}
-                <Repeat1 size={18} />
-            {:else}
-                <Repeat size={18} />
-            {/if}
-        </button>
-        <button class="text-text-subdued hover:text-text-base" on:click={() => playerStore.setVolume(volume > 0 ? 0 : 1)} aria-label="Toggle Mute">
-            {#if volume > 0}
-                <Volume2 size={18} />
-            {:else}
-                <VolumeX size={18} />
-            {/if}
-        </button>
-        <div class="w-24 h-1 bg-background-elevated-highlight rounded-full relative">
-             <input
+<!-- Mobile Player -->
+<footer class="bg-black border-t border-gray-800 h-16 md:h-[90px] fixed bottom-0 left-0 right-0 z-50">
+    <!-- Mobile Layout -->
+    <div class="md:hidden h-full flex flex-col">
+        <!-- Progress Bar (thin, at the very top) -->
+        <div class="w-full h-1 bg-gray-800 relative">
+            <input
                 type="range"
-                id="volume-slider"
                 min="0"
                 max="100"
-                value={volume * 100}
-                on:input={handleVolumeChange}
-                class="absolute w-full h-full appearance-none cursor-pointer volume-slider"
-                style="--volume: {volume * 100}%;"
+                value={duration > 0 ? (progress / duration) * 100 : 0}
+                on:input={handleProgressBarChange}
+                class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                disabled={!currentSong}
             />
-            <div class="h-full bg-text-base rounded-full" style="width: {volume * 100}%"></div>
+            <!-- Removed transition-all class, added inline transition for width only -->
+            <div class="h-full bg-green-500" style="width: {duration > 0 ? (progress / duration) * 100 : 0}%; box-shadow: 0 0 {bassIntensity * 8}px {GLOW_COLOR}; transition: width 100ms linear;"></div>
+        </div>
+
+        <!-- Main Mobile Content -->
+        <div class="flex-1 flex items-center justify-between px-3">
+            <!-- Track Info -->
+            <div class="flex items-center gap-3 flex-1 min-w-0">
+                {#if currentSong}
+                    <img
+                        src={currentSong.albumImageUrl}
+                        alt={currentSong.name}
+                        class="w-12 h-12 rounded object-cover shrink-0"
+                    />
+                    <div class="min-w-0 flex-1 max-w-20">
+                        <button
+                            class="font-semibold text-sm text-white truncate text-left w-full hover:underline"
+                            on:click={navigateToSong}
+                            aria-label="View current song details"
+                        >
+                            {currentSong.name}
+                        </button>
+                        <button
+                            class="text-xs text-gray-400 truncate hover:underline text-left w-full"
+                            on:click={navigateToArtist}
+                            aria-label="View artist page for {currentSong.artistName}"
+                        >
+                            {currentSong.artistName}
+                        </button>
+                    </div>
+                {:else}
+                    <div class="w-12 h-12 bg-gray-800 rounded shrink-0"></div>
+                    <div class="min-w-0 flex-1 max-w-20">
+                        <div class="font-semibold text-sm text-white">No song playing</div>
+                    </div>
+                {/if}
+            </div>
+
+            <!-- Mobile Controls -->
+            <div class="flex items-center gap-2 shrink-0">
+                <button
+                    class="text-gray-400 hover:text-white transition-colors {isShuffling ? 'text-green-500' : ''}"
+                    on:click={playerStore.toggleShuffle}
+                    disabled={!currentSong}
+                    aria-label="Toggle Shuffle"
+                >
+                    <Shuffle size={20} />
+                </button>
+                <button
+                    class="text-gray-400 hover:text-white transition-colors"
+                    on:click={playerStore.playPreviousSong}
+                    disabled={!currentSong}
+                    aria-label="Play Previous Song"
+                >
+                    <SkipBack size={24} />
+                </button>
+                <button
+                    class="text-gray-400 hover:text-white transition-colors"
+                    on:click={playerStore.playNextSong}
+                    disabled={!currentSong}
+                    aria-label="Play Next Song"
+                >
+                    <SkipForward size={24} />
+                </button>
+                <button
+                    class="text-gray-400 hover:text-white transition-colors {loopMode !== 'none' ? 'text-green-500' : ''}"
+                    on:click={playerStore.toggleLoopMode}
+                    disabled={!currentSong}
+                    aria-label="Toggle Loop Mode"
+                >
+                    {#if loopMode === 'one'}
+                        <Repeat1 size={20} />
+                    {:else}
+                        <Repeat size={20} />
+                    {/if}
+                </button>
+                <button
+                    class="text-gray-400 hover:text-white transition-colors"
+                    on:click={toggleEqVisibility}
+                    aria-label="Toggle Equalizer"
+                >
+                    <SlidersHorizontal size={20} />
+                </button>
+                <button
+                    class="text-gray-400 hover:text-white transition-colors"
+                    on:click={togglePlayPause}
+                    disabled={!currentSong}
+                    aria-label="Play or Pause Song"
+                >
+                    {#if isPlaying}
+                        <Pause size={28} fill="white" />
+                    {:else}
+                        <Play size={28} fill="white" />
+                    {/if}
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Desktop Layout -->
+    <div class="hidden md:grid md:grid-cols-[1fr_2fr_1fr] items-center gap-8 px-4 h-full">
+        <!-- Track Info -->
+        <div class="flex items-center gap-3 hover:bg-gray-900/30 p-2 rounded transition-colors text-left">
+            {#if currentSong}
+                <img
+                    src={currentSong.albumImageUrl}
+                    alt={currentSong.name}
+                    class="w-14 h-14 rounded object-cover"
+                />
+                <div class="min-w-0">
+                    <button 
+                        class="font-semibold text-sm text-white truncate hover:underline text-left w-full"
+                        on:click={navigateToSong}
+                        aria-label="View current song details"
+                    >
+                        {currentSong.name}
+                    </button>
+                    <button 
+                        class="text-xs text-gray-400 truncate hover:underline text-left w-full"
+                        on:click={navigateToArtist}
+                        aria-label="View artist page for {currentSong.artistName}"
+                    >
+                        {currentSong.artistName}
+                    </button>
+                </div>
+            {:else}
+                <div class="w-14 h-14 bg-gray-800 rounded"></div>
+                <div>
+                    <div class="font-semibold text-sm text-white">No song playing</div>
+                    <div class="text-xs text-gray-400"></div>
+                </div>
+            {/if}
+        </div>
+
+        <!-- Player Controls -->
+        <div class="flex flex-col items-center gap-2 w-full">
+            <div class="flex items-center gap-4">
+                <button
+                    class="text-gray-400 hover:text-white transition-colors {isShuffling ? 'text-green-500' : ''}"
+                    on:click={playerStore.toggleShuffle}
+                    disabled={!currentSong}
+                    aria-label="Toggle Shuffle"
+                >
+                    <Shuffle size={16} />
+                </button>
+                <button
+                    class="text-gray-400 hover:text-white transition-colors"
+                    on:click={playerStore.playPreviousSong}
+                    disabled={!currentSong}
+                >
+                    <SkipBack size={20} />
+                </button>
+                <button
+                    class="bg-white text-black rounded-full w-8 h-8 flex items-center justify-center hover:scale-105 transition-transform"
+                    on:click={togglePlayPause}
+                    disabled={!currentSong}
+                >
+                    {#if isPlaying}
+                        <Pause size={18} fill="black" />
+                    {:else}
+                        <Play size={18} fill="black" class="ml-0.5" />
+                    {/if}
+                </button>
+                <button
+                    class="text-gray-400 hover:text-white transition-colors"
+                    on:click={playerStore.playNextSong}
+                    disabled={!currentSong}
+                >
+                    <SkipForward size={20} />
+                </button>
+                <button
+                    class="text-gray-400 hover:text-white transition-colors {loopMode !== 'none' ? 'text-green-500' : ''}"
+                    on:click={playerStore.toggleLoopMode}
+                    disabled={!currentSong}
+                    aria-label="Toggle Loop Mode"
+                >
+                    {#if loopMode === 'one'}
+                        <Repeat1 size={16} />
+                    {:else}
+                        <Repeat size={16} />
+                    {/if}
+                </button>
+            </div>
+            <div class="flex items-center gap-2 w-full max-w-2xl text-xs text-gray-400">
+                <span class="w-10 text-right">{formatTime(progress)}</span>
+                <div class="flex-1 h-1 bg-gray-700 rounded-full relative group">
+                    <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={duration > 0 ? (progress / duration) * 100 : 0}
+                        on:input={handleProgressBarChange}
+                        class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        disabled={!currentSong}
+                    />
+                    <!-- Removed transition-all class, added inline transition for width only -->
+                    <div class="h-full bg-white rounded-full relative" style="width: {duration > 0 ? (progress / duration) * 100 : 0}%; box-shadow: 0 0 {bassIntensity * 8}px {GLOW_COLOR}; transition: width 100ms linear;">
+                        <div class="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    </div>
+                </div>
+                <span class="w-10">{formatTime(duration || currentSong?.duration || 0)}</span>
+            </div>
+        </div>
+
+        <!-- Extra Controls -->
+        <div class="flex justify-end items-center gap-4">
+            <button class="text-gray-400 hover:text-white transition-colors">
+                <Mic2 size={18} />
+            </button>
+            <button class="text-gray-400 hover:text-white transition-colors">
+                <ListMusic size={18} />
+            </button>
+            <button
+                class="text-gray-400 hover:text-white transition-colors"
+                on:click={toggleEqVisibility}
+                aria-label="Toggle Equalizer"
+            >
+                <SlidersHorizontal size={18} />
+            </button>
+            <button
+                class="text-gray-400 hover:text-white transition-colors"
+                on:click={() => playerStore.setVolume(volume > 0 ? 0 : 1)}
+                aria-label="Toggle Mute"
+            >
+                {#if volume > 0}
+                    <Volume2 size={18} />
+                {:else}
+                    <VolumeX size={18} />
+                {/if}
+            </button>
+            <div class="w-24 h-1 bg-gray-700 rounded-full relative group">
+                <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={volume * 100}
+                    on:input={handleVolumeChange}
+                    class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                />
+                <div class="h-full bg-white rounded-full relative transition-all" style="width: {volume * 100}%">
+                    <div class="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                </div>
+            </div>
         </div>
     </div>
 </footer>
 
 <!-- EQ Component Overlay -->
-{#if showEq && audioEffectsState?.audioContext && audioEffectsState?.masterGainNode && audioEffectsState?.convolverNode}
-    <div class="eq-overlay">
+{#if showEq && audioEffectsState?.audioContext && audioEffectsState?.filterNodes && audioEffectsState?.convolverNode}
+    <div class="fixed bottom-16 md:bottom-[90px] right-0 z-1000 p-2.5 flex justify-end">
         <Eq
             audioContext={audioEffectsState.audioContext}
             filterNodes={audioEffectsState.filterNodes}
@@ -383,7 +700,6 @@
             bind:reverbPreDelay={genericReverbPreDelay}
             bind:reverbType={genericReverbType}
             
-
             on:updateEqGain={(e) => audioEffectsStore.updateEqGain(e.detail.index, e.detail.value)}
             on:applyEqPreset={(e) => audioEffectsStore.applyEqPreset(e.detail.gains)}
             on:selectIr={(e) => audioEffectsStore.selectIr(e.detail.url)}
@@ -398,243 +714,3 @@
         />
     </div>
 {/if}
-
-<style>
-    footer {
-        grid-area: player;
-        background-color: #000;
-        border-top: 1px solid var(--background-elevated-base);
-        padding: 0 16px;
-        height: 90px;
-        display: grid;
-        grid-template-columns: 1fr 2fr 1fr;
-        align-items: center;
-        gap: 2rem;
-    }
-    .flex {
-        display: flex;
-    }
-    .items-center {
-        align-items: center;
-    }
-    .gap-3 {
-        gap: 12px;
-    }
-    .w-14 {
-        width: 56px;
-    }
-    .h-14 {
-        height: 56px;
-    }
-    .font-semibold {
-        font-weight: 600;
-    }
-    .text-sm {
-        font-size: 0.9rem;
-    }
-    .text-xs {
-        font-size: 0.75rem;
-    }
-    .text-text-subdued {
-        color: var(--text-subdued);
-    }
-    .hover\:text-text-base:hover {
-        color: var(--text-base);
-    }
-    .bg-text-base {
-        background-color: var(--text-base);
-    }
-    .text-black {
-        color: #000;
-    }
-    .rounded-full {
-        border-radius: 50%;
-    }
-    .p-2 {
-        padding: 8px;
-    }
-    .hover\:scale-105:hover {
-        transform: scale(1.05);
-    }
-    .hidden {
-        display: none;
-    }
-    .md\:flex {
-        display: flex;
-    }
-    .gap-4 {
-        gap: 16px;
-    }
-    .w-24 {
-        width: 100px;
-    }
-    .h-1 {
-        height: 2px; /* Made the slider track thinner */
-    }
-    .bg-background-elevated-base {
-        background-color: var(--background-elevated-base);
-    }
-    .bg-background-elevated-highlight {
-        background-color: var(--background-elevated-highlight);
-    }
-
-    @media (max-width: 768px) {
-        footer {
-            grid-template-columns: 1fr;
-            height: auto;
-            padding: 12px;
-        }
-    }
-
-    /* Custom styles for range input to match design */
-    .range-slider::-webkit-slider-thumb,
-    .volume-slider::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: #fff; /* White thumb */
-        cursor: pointer;
-        margin-top: -5px; /* Re-centered thumb for 2px track */
-        box-shadow: 0 0 0 2px rgba(0,0,0,0.2);
-        display: none; /* Hide by default */
-    }
-
-    .range-slider:hover::-webkit-slider-thumb,
-    .range-slider:focus::-webkit-slider-thumb,
-    .volume-slider:hover::-webkit-slider-thumb,
-    .volume-slider:focus::-webkit-slider-thumb {
-        display: block; /* Show on hover/focus */
-    }
-
-    .range-slider::-webkit-slider-runnable-track,
-    .volume-slider::-webkit-slider-runnable-track {
-        width: 100%;
-        height: 2px; /* Match the new track height */
-        background: transparent; /* Track is handled by the div below */
-        border-radius: 2px;
-    }
-
-    /* Firefox compatibility */
-    .range-slider::-moz-range-thumb,
-    .volume-slider::-moz-range-thumb {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: #fff;
-        cursor: pointer;
-        border: none;
-        display: none;
-    }
-    .range-slider:hover::-moz-range-thumb,
-    .range-slider:focus::-moz-range-thumb,
-    .volume-slider:hover::-moz-range-thumb,
-    .volume-slider:focus::-moz-range-thumb {
-        display: block;
-    }
-    .range-slider::-moz-range-track,
-    .volume-slider::-moz-range-track {
-        width: 100%;
-        height: 2px; /* Match the new track height */
-        background: transparent;
-        border-radius: 2px;
-    }
-
-    /* Microsoft Edge compatibility */
-    .range-slider::-ms-thumb,
-    .volume-slider::-ms-thumb {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: #fff;
-        cursor: pointer;
-        margin-top: 0;
-        box-shadow: 0 0 0 2px rgba(0,0,0,0.2);
-        display: none;
-    }
-    .range-slider:hover::-ms-thumb,
-    .range-slider:focus::-ms-thumb,
-    .volume-slider:hover::-ms-thumb,
-    .volume-slider:focus::-ms-thumb {
-        display: block;
-    }
-    .range-slider::-ms-track,
-    .volume-slider::-ms-track {
-        width: 100%;
-        height: 2px; /* Match the new track height */
-        background: transparent;
-        border-radius: 2px;
-        color: transparent; /* Hide default track */
-    }
-    .range-slider::-ms-fill-lower,
-    .volume-slider::-ms-fill-lower {
-        background: transparent; /* Fill controlled by custom div */
-    }
-    .range-slider::-ms-fill-upper,
-    .volume-slider::-ms-fill-upper {
-        background: transparent; /* Fill controlled by custom div */
-    }
-
-    /* Position the range input over the progress div */
-    .range-slider, .volume-slider {
-        position: absolute;
-        top: 0;
-        left: 0;
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        background: transparent;
-        z-index: 1; /* Place above the visible track */
-    }
-
-    .range-slider:focus-visible, .volume-slider:focus-visible {
-        outline: none; /* Remove default focus outline */
-    }
-
-    /* Hide default track for some browsers */
-    .range-slider, .volume-slider {
-        /* Firefox */
-        -moz-appearance: none;
-        /* Chrome, Safari, Edge */
-        -webkit-appearance: none;
-        appearance: none;
-    }
-
-    .range-slider::-webkit-slider-runnable-track,
-    .volume-slider::-webkit-slider-runnable-track {
-        background: transparent;
-    }
-    .range-slider::-moz-range-track,
-    .volume-slider::-moz-range-track {
-        background: transparent;
-    }
-    .range-slider::-ms-track,
-    .volume-slider::-ms-track {
-        background: transparent;
-    }
-
-    /* Styles for EQ Overlay */
-    .eq-overlay {
-        position: fixed;
-        bottom: 90px; /* Adjust based on player height */
-        right: 0;
-        z-index: 1000;
-        background-color: transparent; /* Make it transparent to only show Eq component */
-        padding: 10px; /* Optional: if you want some space around the EQ component */
-        display: flex; /* Adjust display if you need to position Eq component specifically */
-        justify-content: flex-end; /* Align EQ to the right */
-    }
-
-    /* Added styling for active shuffle button */
-    .text-text-base {
-        color: var(--text-base); /* Assuming --text-base is your primary text color, e.g. white or a light grey */
-    }
-    .text-text-subdued {
-        color: var(--text-subdued); /* Assuming --text-subdued is a less prominent color */
-    }
-
-    button.active {
-        color: var(--text-base); /* This will make the icon white when active */
-    }
-</style>

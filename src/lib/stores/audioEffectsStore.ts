@@ -43,6 +43,7 @@ export type AudioEffectsState = {
     convolverNode: ConvolverNode | null;
     convolverDryGainNode: GainNode | null;
     convolverWetGainNode: GainNode | null;
+    convolverBoostGainNode: GainNode | null; // NEW: Gain node for convolver boost
     genericReverbPreDelayNode: DelayNode | null;
     genericReverbOutputGain: GainNode | null;
     combFilters: { delay: DelayNode; feedback: GainNode; filter: BiquadFilterNode }[];
@@ -75,6 +76,7 @@ const initialAudioEffectsState: AudioEffectsState = {
     convolverNode: null,
     convolverDryGainNode: null,
     convolverWetGainNode: null,
+    convolverBoostGainNode: null, // NEW: Initialize as null
     genericReverbPreDelayNode: null,
     genericReverbOutputGain: null,
     combFilters: [],
@@ -142,6 +144,8 @@ export const audioEffectsStore = {
         const newConvolverNode = newAudioContext.createConvolver();
         const newConvolverDryGainNode = newAudioContext.createGain();
         const newConvolverWetGainNode = newAudioContext.createGain();
+        const newConvolverBoostGainNode = newAudioContext.createGain(); // NEW: Convolver Boost Gain Node
+        newConvolverBoostGainNode.gain.value = 1; // Default to no boost
         console.log('AudioEffectsStore: Convolver and its Dry/Wet GainNodes created.');
 
         // 5. Create Generic Reverb Nodes (Freeverb-style architecture)
@@ -183,6 +187,7 @@ export const audioEffectsStore = {
             convolverNode: newConvolverNode,
             convolverDryGainNode: newConvolverDryGainNode,
             convolverWetGainNode: newConvolverWetGainNode,
+            convolverBoostGainNode: newConvolverBoostGainNode, // NEW: Add to store
             genericReverbPreDelayNode: newGenericReverbPreDelayNode,
             genericReverbOutputGain: newGenericReverbOutputGain,
             combMergerNode: newCombMergerNode,
@@ -226,12 +231,13 @@ export const audioEffectsStore = {
     setupAudioGraph: () => {
         const state = getCurrentState();
         const { sourceNode, filterNodes, convolverNode, convolverDryGainNode, convolverWetGainNode,
+                convolverBoostGainNode, // NEW: Destructure boost node
                 genericReverbPreDelayNode, genericReverbOutputGain, combFilters, allPassFilters, combMergerNode,
                 analyserNode, masterGainNode, audioContext } = state;
 
         // Basic validation that required nodes exist
         if (!audioContext || !sourceNode || !masterGainNode || !analyserNode || !convolverNode || !genericReverbPreDelayNode ||
-            !convolverDryGainNode || !convolverWetGainNode || !genericReverbOutputGain || !combMergerNode || !combFilters.length || !allPassFilters.length) {
+            !convolverDryGainNode || !convolverWetGainNode || !genericReverbOutputGain || !combMergerNode || !combFilters.length || !allPassFilters.length || !convolverBoostGainNode) { // NEW: Validate boost node
             console.error('AudioEffectsStore: Cannot setup audio graph, some required nodes are null/missing.');
             return;
         }
@@ -269,13 +275,14 @@ export const audioEffectsStore = {
         allPassFilters[0].connect(allPassFilters[1]); // Assuming 2 all-pass filters
         allPassFilters[1].connect(genericReverbOutputGain); // Final generic reverb output
 
-        // 4. All Effect Paths -> Analyser -> Master Gain -> Destination
+        // 4. All Effect Paths -> Analyser -> Convolver Boost -> Master Gain -> Destination
         convolverDryGainNode.connect(analyserNode);      // Convolver dry path
         convolverNode.connect(convolverWetGainNode);    // Convolver feeds its wet gain
         convolverWetGainNode.connect(analyserNode);     // Convolver wet path
         genericReverbOutputGain.connect(analyserNode);  // Generic reverb path
 
-        analyserNode.connect(masterGainNode); // Analyser feeds into master volume
+        analyserNode.connect(convolverBoostGainNode);   // NEW: Analyser feeds into Convolver Boost
+        convolverBoostGainNode.connect(masterGainNode); // NEW: Convolver Boost feeds into Master Gain
         masterGainNode.connect(audioContext.destination); // Master volume feeds to speakers
     },
 
@@ -582,11 +589,12 @@ export const audioEffectsStore = {
     updateAllEffects: () => {
         const state = getCurrentState();
         const { convolverNode, convolverDryGainNode, convolverWetGainNode,
+                convolverBoostGainNode, // NEW: Destructure boost node
                 genericReverbPreDelayNode, genericReverbOutputGain, combFilters,
                 convolverEnabled, impulseResponseBuffer, convolverMix,
                 genericReverbEnabled, genericReverbMix, genericReverbPreDelay, genericReverbDecay, genericReverbDamping } = state;
 
-        if (!convolverNode || !convolverDryGainNode || !convolverWetGainNode ||
+        if (!convolverNode || !convolverDryGainNode || !convolverWetGainNode || !convolverBoostGainNode || // NEW: Validate boost node
             !genericReverbPreDelayNode || !genericReverbOutputGain || !combFilters.length) {
                 // console.warn('AudioEffectsStore: Not all nodes available for updateAllEffects. Skipping.');
                 return;
@@ -599,6 +607,19 @@ export const audioEffectsStore = {
         } else {
             convolverWetGainNode.gain.value = 0; // Disable wet signal
             convolverDryGainNode.gain.value = 1; // Full dry signal if convolver is off
+        }
+
+        // --- Convolver Volume Boost Logic (NEW) ---
+        const MAX_CONVOLVER_BOOST_DB = 9; // Increased from 3dB to 6dB for more volume
+        const MIN_MIX_FOR_BOOST = 0.2; // Start boosting from 20% mix
+
+        if (convolverEnabled && convolverMix >= MIN_MIX_FOR_BOOST) {
+            // Normalize convolverMix from [MIN_MIX_FOR_BOOST, 1.0] to [0, 1]
+            const normalizedMix = (convolverMix - MIN_MIX_FOR_BOOST) / (1.0 - MIN_MIX_FOR_BOOST);
+            const boostDb = normalizedMix * MAX_CONVOLVER_BOOST_DB;
+            convolverBoostGainNode.gain.value = Math.pow(10, boostDb / 20); // Convert dB to linear gain
+        } else {
+            convolverBoostGainNode.gain.value = 1; // No boost
         }
 
         // --- Generic Reverb Logic ---
