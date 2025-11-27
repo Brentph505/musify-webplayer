@@ -47,6 +47,7 @@
 
     const PLAYER_UI_LOCAL_STORAGE_KEY = 'musify-player-ui-settings';
     let showEq: boolean = false;
+    let audioEffectsInitialized: boolean = false; // NEW: Track if audio effects are initialized
 
     // FADE EFFECT CONSTANT
     const FADE_DURATION_SECONDS = 0.5; // Duration of the fade effect in seconds
@@ -226,14 +227,8 @@
             }
         });
 
-        if (audioElement) {
-             await audioEffectsStore.init(audioElement, volume);
-             // After init, ensure the master gain value is correctly set to `volume` from the store
-             // This can happen if audioEffectsStore.init sets a default that differs from playerStore.volume
-             audioEffectsStore.setMasterVolume(volume);
-        } else {
-            console.error("Player.svelte: audioElement is not available on mount!");
-        }
+        // The audioEffectsStore.init() call is now handled by the reactive block below
+        // to ensure it only runs after a user gesture (i.e., the first play).
         
         if (audioElement) {
             audioElement.volume = 1; // Always keep HTML5 audio volume at 1, control via Web Audio API
@@ -263,10 +258,23 @@
     });
 
     // Reactive block for play/pause logic
-    // This block should only control play/pause for the *currently loaded* audio source,
-    // as loading new sources and fading is handled by the subscribe block.
+    // This block now handles initializing the AudioContext on the first play attempt.
     $: {
-        if (audioElement && audioEffectsState?.audioContext && !isFadingOut) {
+        if (isPlaying && currentSong && !audioEffectsInitialized && audioElement) {
+            // First play attempt: initialize the audio effects store. This requires a user gesture.
+            const initializeAndPlay = async () => {
+                console.log("Player.svelte reactive: First play detected, initializing AudioContext...");
+                try {
+                    await audioEffectsStore.init(audioElement, volume);
+                    audioEffectsInitialized = true;
+                    // The reactive block will re-run after this, and the next condition will handle the play.
+                } catch (e) {
+                    console.error("Player.svelte: Failed to initialize audio effects:", e);
+                }
+            };
+            initializeAndPlay();
+        } else if (audioEffectsInitialized && audioElement && audioEffectsState?.audioContext && !isFadingOut) {
+            // Audio effects are initialized, handle play/pause.
             if (isPlaying) {
                 if (currentSong) { // Only attempt to play if there's a current song
                     if (audioEffectsState.audioContext.state === 'suspended') {
