@@ -4,7 +4,7 @@ export type SongForPlayer = {
     id: string;
     name: string;
     artistName: string;
-    albumName: string; // Added albumName to SongForPlayer
+    albumName: string;
     albumImageUrl: string;
     audioUrl: string;
     duration: number; // in seconds
@@ -20,31 +20,69 @@ export type PlayerState = {
     shuffledQueue: SongForPlayer[]; // The currently shuffled list of songs
     shuffledQueueIndex: number; // Current index in the shuffled queue
     loopMode: 'none' | 'all' | 'one'; // NEW: loop mode state
+    // `lastSongId` removed as `currentSong` is persisted
 };
 
-const initialPlayerState: PlayerState = {
-    currentSong: null,
-    isPlaying: false,
-    progress: 0,
-    volume: 1, // default to full volume
-    recommendations: [],
-    isShuffling: false,
-    shuffledQueue: [],
-    shuffledQueueIndex: -1,
-    loopMode: 'none', // NEW: default to no loop
-};
+const PLAYER_LOCAL_STORAGE_KEY = 'musify-player-state';
 
-// Helper function for Fisher-Yates (Knuth) shuffle algorithm
-function shuffleArray<T>(array: T[]): T[] {
-    const newArray = [...array]; // Create a copy to avoid mutating original
-    for (let i = newArray.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+// Function to load player state from localStorage
+function loadPlayerStateFromLocalStorage(): Partial<PlayerState> {
+    if (typeof window === 'undefined') return {}; // Server-side rendering guard
+    const stored = localStorage.getItem(PLAYER_LOCAL_STORAGE_KEY);
+    if (stored) {
+        try {
+            const parsed = JSON.parse(stored);
+            const loadedState: Partial<PlayerState> = {};
+            if (typeof parsed.isShuffling === 'boolean') loadedState.isShuffling = parsed.isShuffling;
+            if (parsed.loopMode && ['none', 'all', 'one'].includes(parsed.loopMode)) loadedState.loopMode = parsed.loopMode;
+            if (typeof parsed.volume === 'number') loadedState.volume = parsed.volume;
+
+            // Load currentSong if a valid object was stored
+            if (parsed.currentSong && typeof parsed.currentSong === 'object' && parsed.currentSong.id && parsed.currentSong.audioUrl) {
+                loadedState.currentSong = parsed.currentSong;
+            }
+            return loadedState;
+        } catch (e) {
+            console.error("Failed to parse player state from localStorage", e);
+            return {};
+        }
     }
-    return newArray;
+    return {};
 }
 
+// Merge initial defaults with any loaded state from localStorage
+const persistedPlayerState = loadPlayerStateFromLocalStorage();
+
+const initialPlayerState: PlayerState = {
+    currentSong: persistedPlayerState.currentSong || null,
+    isPlaying: false, // Always start as paused to prevent autoplay issues
+    progress: 0, // Always start progress at 0 on load
+    volume: persistedPlayerState.volume ?? 1, // Use persisted volume, default to 1
+    recommendations: [], // Recommendations are dynamic, not persisted here
+    isShuffling: persistedPlayerState.isShuffling ?? false,
+    shuffledQueue: [], // Shuffled queue is dynamic, rebuilt when recommendations are set or shuffle toggled
+    shuffledQueueIndex: -1,
+    loopMode: persistedPlayerState.loopMode ?? 'none',
+};
+
 const player = writable<PlayerState>(initialPlayerState);
+
+// Function to save player state to localStorage
+function savePlayerStateToLocalStorage(state: PlayerState) {
+    if (typeof window === 'undefined') return;
+    const stateToPersist = {
+        isShuffling: state.isShuffling,
+        loopMode: state.loopMode,
+        currentSong: state.currentSong,
+        volume: state.volume
+    };
+    localStorage.setItem(PLAYER_LOCAL_STORAGE_KEY, JSON.stringify(stateToPersist));
+}
+
+// Subscribe to the player store to automatically save state on changes
+player.subscribe(state => {
+    savePlayerStateToLocalStorage(state);
+});
 
 // The `playerStore` object will now expose all the actions.
 export const playerStore = {
@@ -52,9 +90,8 @@ export const playerStore = {
 
     startPlaying: (song: SongForPlayer) => {
         player.update(state => {
-            // When a new song is started manually, shuffle mode is maintained,
-            // and the queue is rebuilt around the selected song.
-            if (state.isShuffling) {
+            // Rebuild shuffled queue if shuffling and current song changes
+            if (state.isShuffling && state.recommendations.length > 0) {
                 const otherSongs = state.recommendations.filter(s => s.id !== song.id);
                 const newShuffledQueue = [song, ...shuffleArray(otherSongs)];
                 return {
@@ -66,8 +103,6 @@ export const playerStore = {
                     shuffledQueueIndex: 0
                 };
             }
-
-            // Default behavior if not shuffling
             return {
                 ...state,
                 currentSong: song,
@@ -93,32 +128,30 @@ export const playerStore = {
         player.update(state => ({ ...state, volume }));
     },
 
-    // New: Set a list of recommendations (e.g., from a song detail page)
     setRecommendations: (songs: SongForPlayer[]) => {
         player.update(state => {
             console.log(`playerStore: Received ${songs.length} new recommendations.`);
             const newState = { ...state, recommendations: songs };
-            // If shuffle is active, re-shuffle the new recommendations
-            if (state.isShuffling) {
+            if (state.isShuffling && songs.length > 0) {
                 let tempRecommendations = [...songs];
                 const current = state.currentSong;
 
                 if (current && songs.some(s => s.id === current.id)) {
-                    // If current song is in the new list, keep it at the front of the shuffle
                     tempRecommendations = tempRecommendations.filter(s => s.id !== current.id);
                     newState.shuffledQueue = [current, ...shuffleArray(tempRecommendations)];
                     newState.shuffledQueueIndex = 0;
                 } else {
                     newState.shuffledQueue = shuffleArray(tempRecommendations);
-                    // If there's no current song, or it's not in the new list, start from the top
-                    newState.shuffledQueueIndex = -1;
+                    newState.shuffledQueueIndex = -1; // No current song in new queue, so reset
                 }
+            } else {
+                 newState.shuffledQueue = []; // Clear shuffled queue if shuffle is off
+                 newState.shuffledQueueIndex = -1;
             }
             return newState;
         });
     },
 
-    // New: Toggle shuffle mode
     toggleShuffle: () => {
         player.update(state => {
             const newIsShuffling = !state.isShuffling;
@@ -128,7 +161,6 @@ export const playerStore = {
             if (newIsShuffling && state.recommendations.length > 0) {
                 let tempRecommendations = [...state.recommendations];
                 const current = state.currentSong;
-                // If a song is playing, make it the first song in the new shuffled queue
                 if (current) {
                     tempRecommendations = tempRecommendations.filter(s => s.id !== current.id);
                     newShuffledQueue = [current, ...shuffleArray(tempRecommendations)];
@@ -139,6 +171,9 @@ export const playerStore = {
                 console.log('playerStore: Shuffle enabled. Shuffled queue created.');
             } else {
                 console.log('playerStore: Shuffle disabled.');
+                // When shuffle is disabled, clear the shuffled queue
+                newShuffledQueue = [];
+                newShuffledQueueIndex = -1;
             }
 
             return {
@@ -150,7 +185,6 @@ export const playerStore = {
         });
     },
 
-    // NEW: Toggle loop mode
     toggleLoopMode: () => {
         player.update(state => {
             let newLoopMode: 'none' | 'all' | 'one' = 'all';
@@ -161,19 +195,28 @@ export const playerStore = {
         });
     },
 
-    // NEW: Generic function to play the next song, respecting shuffle and loop modes
     playNextSong: () => {
         player.update(state => {
             if (!state.currentSong) return { ...state, isPlaying: false };
 
             // Handle shuffle mode
             if (state.isShuffling) {
-                if (state.shuffledQueue.length === 0) return { ...state, isPlaying: false };
+                if (state.shuffledQueue.length === 0) {
+                    // If shuffled queue is empty but recommendations exist, generate one
+                    if (state.recommendations.length > 0) {
+                         const current = state.currentSong;
+                         let tempRecommendations = state.recommendations.filter(s => s.id !== current.id);
+                         const newQueue = [current, ...shuffleArray(tempRecommendations)];
+                         return { ...state, shuffledQueue: newQueue, shuffledQueueIndex: 0 };
+                    }
+                    return { ...state, isPlaying: false };
+                }
+                
                 let nextIndex = state.shuffledQueueIndex + 1;
-
                 if (nextIndex >= state.shuffledQueue.length) {
                     if (state.loopMode === 'all') {
                         console.log('playerStore: End of shuffled queue, reshuffling for loop.');
+                        // Reshuffle the entire recommendations list if looping all
                         const newQueue = shuffleArray(state.recommendations);
                         const nextSong = newQueue[0];
                         if (!nextSong) return { ...state, isPlaying: false };
@@ -187,9 +230,9 @@ export const playerStore = {
 
             // Handle sequential mode
             const currentIndex = state.recommendations.findIndex(song => song.id === state.currentSong?.id);
-            if (currentIndex === -1) return { ...state, isPlaying: false };
-            let nextIndex = currentIndex + 1;
+            if (currentIndex === -1) return { ...state, isPlaying: false }; // Current song not in recommendations
 
+            let nextIndex = currentIndex + 1;
             if (nextIndex >= state.recommendations.length) {
                 if (state.loopMode === 'all') {
                     nextIndex = 0; // Loop back to the start
@@ -202,7 +245,6 @@ export const playerStore = {
         });
     },
 
-    // NEW: Function to play the previous song
     playPreviousSong: () => {
         player.update(state => {
             if (!state.currentSong) return state;
@@ -220,7 +262,8 @@ export const playerStore = {
 
             // Handle sequential mode
             const currentIndex = state.recommendations.findIndex(song => song.id === state.currentSong?.id);
-            if (currentIndex === -1) return state;
+            if (currentIndex === -1) return state; // Current song not in recommendations
+
             let prevIndex = currentIndex - 1;
             if (prevIndex < 0) {
                 prevIndex = state.recommendations.length - 1; // Wrap around to the end
@@ -230,3 +273,13 @@ export const playerStore = {
         });
     }
 };
+
+// Helper function for Fisher-Yates (Knuth) shuffle algorithm
+function shuffleArray<T>(array: T[]): T[] {
+    const newArray = [...array]; // Create a copy to avoid mutating original
+    for (let i = newArray.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+    }
+    return newArray;
+}

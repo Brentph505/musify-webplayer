@@ -2,142 +2,160 @@
     import Home from 'lucide-svelte/icons/home';
     import Search from 'lucide-svelte/icons/search';
     import Library from 'lucide-svelte/icons/library';
+    import Plus from 'lucide-svelte/icons/plus';
+    import ListMusic from 'lucide-svelte/icons/list-music';
+    
+    let activeFilter = 'Playlists';
+    
+    const filters = ['Playlists', 'Artists', 'Albums'];
+    
+    const playlists = [
+        { name: 'Liked Songs', count: '234 songs' },
+        { name: 'My Playlist #1', count: '45 songs' },
+        { name: 'Chill Vibes', count: '67 songs' },
+        { name: 'Workout Mix', count: '89 songs' },
+        { name: 'Study Focus', count: '123 songs' },
+    ];
 </script>
 
-<nav class="bg-black flex flex-col gap-2 h-full">
-    <div class="bg-background-highlight rounded-lg p-2">
-        <ul class="flex flex-col">
+<nav class="bg-black flex flex-col gap-2 h-full p-2">
+    <!-- Top Navigation Section -->
+    <div class="bg-[#121212] rounded-lg overflow-hidden">
+        <ul class="flex flex-col py-2">
             <li>
                 <a
                     href="/"
-                    class="flex items-center gap-5 text-text-subdued hover:text-text-base font-semibold transition-colors p-2"
+                    class="flex items-center gap-4 text-gray-400 hover:text-white font-bold transition-colors px-6 py-3 group"
                 >
-                    <Home /> Home
+                    <Home size={24} class="group-hover:scale-110 transition-transform" />
+                    <span>Home</span>
                 </a>
             </li>
             <li>
                 <a
                     href="/search"
-                    class="flex items-center gap-5 text-text-subdued hover:text-text-base font-semibold transition-colors p-2"
+                    class="flex items-center gap-4 text-gray-400 hover:text-white font-bold transition-colors px-6 py-3 group"
                 >
-                    <Search /> Search
+                    <Search size={24} class="group-hover:scale-110 transition-transform" />
+                    <span>Search</span>
                 </a>
             </li>
         </ul>
     </div>
-    <div class="bg-background-highlight rounded-lg p-2 pt-0 flex-1 flex flex-col">
-        <div class="p-2">
-            <button class="flex items-center gap-5 text-text-subdued hover:text-text-base font-semibold w-full">
-                <Library />
+
+    <!-- Library Section -->
+    <div class="bg-[#121212] rounded-lg flex-1 flex flex-col overflow-hidden">
+        <!-- Library Header -->
+        <div class="px-4 py-3">
+            <button
+                class="flex items-center gap-4 text-gray-400 hover:text-white font-bold w-full transition-colors group"
+            >
+                <Library size={24} class="group-hover:scale-110 transition-transform" />
                 <span>Your Library</span>
             </button>
         </div>
-        <div class="overflow-y-auto mt-4">
-            <div class="flex gap-2 mb-4 px-2">
-                <span
-                    class="bg-background-elevated-base text-sm text-text-base py-1 px-3 rounded-full cursor-pointer"
+
+        <!-- Action Buttons -->
+        <div class="px-4 pb-2 flex items-center gap-2">
+            <button
+                class="w-8 h-8 rounded-full bg-[#242424] hover:bg-[#2a2a2a] flex items-center justify-center text-gray-400 hover:text-white transition-all"
+                aria-label="Create playlist"
+            >
+                <Plus size={18} />
+            </button>
+            <button
+                class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#242424] hover:bg-[#2a2a2a] text-gray-400 hover:text-white text-sm font-semibold transition-all"
+            >
+                <ListMusic size={16} />
+                <span class="hidden lg:inline">Create Playlist</span>
+            </button>
+        </div>
+
+        <!-- Filter Chips -->
+        <div class="px-4 py-3 flex gap-2 overflow-x-auto no-scrollbar">
+            {#each filters as filter}
+                <button
+                    class="px-3 py-1.5 rounded-full text-sm font-medium transition-all whitespace-nowrap"
+                    class:bg-white={activeFilter === filter}
+                    class:text-black={activeFilter === filter}
+                    class:bg-[#242424]={activeFilter !== filter}
+                    class:text-white={activeFilter !== filter}
+                    class:hover:bg-[#2a2a2a]={activeFilter !== filter}
+                    on:click={() => (activeFilter = filter)}
                 >
-                    Playlists
-                </span>
-                <span
-                    class="bg-background-elevated-base text-sm text-text-base py-1 px-3 rounded-full cursor-pointer"
-                >
-                    Artists
-                </span>
-            </div>
-            <ul class="flex flex-col gap-3 p-2">
-                <li><a href="/" class="text-text-subdued hover:text-text-base text-sm">Liked Songs</a></li>
-                <li>
-                    <a href="/" class="text-text-subdued hover:text-text-base text-sm">My Playlist #1</a>
-                </li>
+                    {filter}
+                </button>
+            {/each}
+        </div>
+
+        <!-- Playlist List -->
+        <div class="flex-1 overflow-y-auto px-2 custom-scrollbar">
+            <ul class="flex flex-col">
+                {#each playlists as playlist}
+                    <li>
+                        <a
+                            href="/"
+                            class="flex items-center gap-3 px-2 py-2 rounded hover:bg-[#1a1a1a] transition-colors group"
+                        >
+                            <div class="w-12 h-12 bg-gradient-to-br from-purple-600 to-blue-600 rounded flex items-center justify-center flex-shrink-0">
+                                <ListMusic size={24} class="text-white" />
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <div class="text-white font-medium text-sm truncate group-hover:underline">
+                                    {playlist.name}
+                                </div>
+                                <div class="text-gray-400 text-xs truncate">
+                                    {playlist.count}
+                                </div>
+                            </div>
+                        </a>
+                    </li>
+                {/each}
             </ul>
         </div>
     </div>
 </nav>
 
 <style>
-    .sidebar {
-        background-color: #000;
-        padding: 8px;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        height: 100%;
-        overflow-y: auto;
-    }
-
-    .sidebar__section {
-        background-color: var(--background-highlight);
-        border-radius: 8px;
-        padding: 8px 12px;
-    }
-
     ul {
         list-style: none;
         padding: 0;
         margin: 0;
     }
 
-    li a,
-    .library__header button {
-        display: flex;
-        align-items: center;
-        gap: 20px;
-        color: var(--text-subdued);
-        text-decoration: none;
-        font-weight: 600;
-        padding: 8px;
-        transition: color 0.2s ease;
+    /* Custom scrollbar styling */
+    .custom-scrollbar::-webkit-scrollbar {
+        width: 12px;
     }
 
-    li a:hover,
-    .library__header button:hover {
-        color: var(--text-base);
+    .custom-scrollbar::-webkit-scrollbar-track {
+        background: transparent;
     }
 
-    .library__header button {
-        background: none;
-        border: none;
-        width: 100%;
-        font-size: 1rem;
-        cursor: pointer;
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+        background-color: #282828;
+        border-radius: 6px;
+        border: 3px solid #121212;
     }
 
-    .sidebar__library {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background-color: #3e3e3e;
     }
 
-    .library__content {
-        overflow-y: auto;
-        margin-top: 1rem;
+    /* Hide scrollbar for filter chips */
+    .no-scrollbar::-webkit-scrollbar {
+        display: none;
     }
 
-    .chip-container {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 16px;
+    .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
     }
 
-    .chip {
-        background-color: var(--background-elevated-base);
-        color: var(--text-base);
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.875rem;
-        cursor: pointer;
-    }
-
-    .playlist-list {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-    }
-
-    .playlist-list a {
-        font-weight: 400;
-        font-size: 0.9rem;
-        padding: 4px;
+    /* Smooth transitions */
+    * {
+        transition-property: background-color, color, transform;
+        transition-duration: 0.2s;
+        transition-timing-function: ease;
     }
 </style>

@@ -5,7 +5,7 @@
     import SkipForward from 'lucide-svelte/icons/skip-forward';
     import Mic2 from 'lucide-svelte/icons/mic-2';
     import ListMusic from 'lucide-svelte/icons/list-music';
-    import Laptop2 from 'lucide-svelte/icons/laptop-2'; // Used to toggle EQ
+    import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal'; // Used to toggle EQ
     import Volume2 from 'lucide-svelte/icons/volume-2';
     import VolumeX from 'lucide-svelte/icons/volume-x'; // For muted state
     import Shuffle from 'lucide-svelte/icons/shuffle'; // Import Shuffle icon
@@ -15,474 +15,142 @@
     import { onMount, onDestroy } from 'svelte';
     import Eq from './Eq.svelte'; // Import the Eq component
 
-    // Ensure PlayerState and SongForPlayer are exported from here
     import { playerStore, type PlayerState, type SongForPlayer } from '$lib/stores/playerStore.js';
+    // NEW: Import the audioEffectsStore and its types
+    import { audioEffectsStore, initialEqBands, type AudioEffectsState } from '$lib/stores/audioEffectsStore.js';
 
     let audioElement: HTMLAudioElement; // Reference to the HTMLAudioElement
-    let currentSong: SongForPlayer | null = $playerStore.currentSong; // Allow null for when no song is playing
-    let isPlaying: boolean = $playerStore.isPlaying;
-    let progress: number = $playerStore.progress;
-    let volume: number = $playerStore.volume;
+    
+    // PlayerStore state (playback-related)
+    let currentSong: SongForPlayer | null;
+    let isPlaying: boolean;
+    let progress: number;
+    let volume: number;
     let duration: number = 0; // Duration of the current song
-    let isShuffling: boolean = $playerStore.isShuffling; // Bind to shuffle state from store
-    let loopMode: 'none' | 'all' | 'one' = $playerStore.loopMode; // Bind to loop state from store
+    let isShuffling: boolean;
+    let loopMode: 'none' | 'all' | 'one';
 
-    // Web Audio API related variables (now owned by Player.svelte)
-    let audioContext: AudioContext;
-    let sourceNode: MediaElementAudioSourceNode;
-    let masterGainNode: GainNode; // Overall volume control for Web Audio API
+    // AudioEffectsStore state (UI/effects-related)
+    // We subscribe to the entire store and then derive individual variables for reactivity and passing to Eq.svelte
+    let audioEffectsState: AudioEffectsState;
+    // Derive individual properties from audioEffectsState for binding to Eq.svelte and UI
+    // These will automatically update when audioEffectsStore changes
+    $: eqGains = audioEffectsState?.eqGains;
+    $: convolverEnabled = audioEffectsState?.convolverEnabled;
+    $: convolverMix = audioEffectsState?.convolverMix;
+    $: impulseResponseBuffer = audioEffectsState?.impulseResponseBuffer;
+    $: availableIrs = audioEffectsState?.availableIrs || []; // Default to empty array if not loaded yet
+    $: selectedIrUrl = audioEffectsState?.selectedIrUrl;
+    $: genericReverbEnabled = audioEffectsState?.genericReverbEnabled;
+    $: genericReverbMix = audioEffectsState?.genericReverbMix;
+    $: genericReverbDecay = audioEffectsState?.genericReverbDecay;
+    $: genericReverbDamping = audioEffectsState?.genericReverbDamping;
+    $: genericReverbPreDelay = audioEffectsState?.genericReverbPreDelay;
+    $: genericReverbType = audioEffectsState?.genericReverbType;
 
-    // EQ related nodes and state (moved from Eq.svelte)
-    let filterNodes: BiquadFilterNode[] = [];
-    const bands = [
-        { frequency: 60, type: 'lowshelf', q: 0.7, gain: 0 },   // Bass
-        { frequency: 170, type: 'peaking', q: 1.0, gain: 0 },   // Low Mid
-        { frequency: 350, type: 'peaking', q: 1.0, gain: 0 },   // Mid
-        { frequency: 1000, type: 'peaking', q: 1.0, gain: 0 },  // Upper Mid
-        { frequency: 3000, type: 'peaking', q: 1.0, gain: 0 },  // Presence
-        { frequency: 8000, type: 'highshelf', q: 0.7, gain: 0 } // Treble
-    ] as const;
-    let eqGains: number[] = bands.map(b => b.gain); // Initial gains for the EQ filters
+    // Local UI state for Eq visibility, saved separately
+    const PLAYER_UI_LOCAL_STORAGE_KEY = 'musify-player-ui-settings';
+    let showEq: boolean = false; // Internal state for EQ UI visibility
 
-    // Impulse Response Reverb (Convolver) related nodes and state
-    let convolverNode: ConvolverNode;
-    let convolverDryGainNode: GainNode; // Controls the dry signal level for the convolver path
-    let convolverWetGainNode: GainNode; // Controls the wet (convolver) signal level
-    let impulseResponseBuffer: AudioBuffer | null = null;
-    let convolverEnabled: boolean = false; // Renamed from reverbEnabled
-    let convolverMix: number = 0.3; // Renamed from reverbMix
-
-    // New state for IR file selection
-    let availableIrs: string[] = []; // List of public URLs for IR files
-    let selectedIrUrl: string | null = null; // Currently selected IR file URL
-
-    // --- New "Valhalla-style" DSP Reverb Nodes and State ---
-    let genericReverbEnabled: boolean = false;
-    let genericReverbMix: number = 0.2;
-    let genericReverbDecay: number = 0.6; // Controls feedback/sustain
-    let genericReverbDamping: number = 6000; // Low-pass filter frequency for damping
-    let genericReverbPreDelay: number = 0.02; // Pre-delay in seconds
-    let genericReverbType: string = 'hall';
-
-    // Core Reverb Nodes
-    let genericReverbPreDelayNode: DelayNode;
-    let genericReverbOutputGain: GainNode;
-    let combFilters: { delay: DelayNode; feedback: GainNode; filter: BiquadFilterNode }[] = [];
-    let allPassFilters: BiquadFilterNode[] = [];
-    let combMergerNode: GainNode;
-
-    // Analyser for potential future visualization (still present)
-    let analyserNode: AnalyserNode;
-
-    let showEq: boolean = false; // State to toggle EQ UI visibility
-
-    // --- Local Storage for Settings ---
-    const LOCAL_STORAGE_KEY = 'musify-audio-settings';
-
-    function loadSettings() {
+    // Function to load player UI-specific settings (like EQ visibility)
+    function loadPlayerUiSettings() {
         if (typeof window !== 'undefined' && window.localStorage) {
-            console.log('Attempting to load settings...');
-            const storedSettings = localStorage.getItem(LOCAL_STORAGE_KEY);
-            if (storedSettings) {
+            const storedUiSettings = localStorage.getItem(PLAYER_UI_LOCAL_STORAGE_KEY);
+            if (storedUiSettings) {
                 try {
-                    console.log('Raw stored settings:', storedSettings);
-                    const settings = JSON.parse(storedSettings);
-                    if (settings.eqGains) {
-                        eqGains = settings.eqGains;
-                        console.log('Loaded eqGains:', eqGains);
+                    const settings = JSON.parse(storedUiSettings);
+                    if (typeof settings.showEq === 'boolean') {
+                        showEq = settings.showEq;
                     }
-                    if (typeof settings.convolverEnabled === 'boolean') {
-                        convolverEnabled = settings.convolverEnabled;
-                        console.log('Loaded convolverEnabled:', convolverEnabled);
-                    }
-                    if (typeof settings.convolverMix === 'number') {
-                        convolverMix = settings.convolverMix;
-                        console.log('Loaded convolverMix:', convolverMix);
-                    }
-                    if (typeof settings.selectedIrUrl === 'string' || settings.selectedIrUrl === null) {
-                        selectedIrUrl = settings.selectedIrUrl;
-                        console.log('Loaded selectedIrUrl:', selectedIrUrl);
-                    }
-                    if (typeof settings.genericReverbEnabled === 'boolean') {
-                        genericReverbEnabled = settings.genericReverbEnabled;
-                        console.log('Loaded genericReverbEnabled:', genericReverbEnabled);
-                    }
-                    if (typeof settings.genericReverbMix === 'number') {
-                        genericReverbMix = settings.genericReverbMix;
-                        console.log('Loaded genericReverbMix:', genericReverbMix);
-                    }
-                    if (typeof settings.genericReverbDecay === 'number') {
-                        genericReverbDecay = settings.genericReverbDecay;
-                        console.log('Loaded genericReverbDecay:', genericReverbDecay);
-                    }
-                    if (typeof settings.genericReverbDamping === 'number') {
-                        genericReverbDamping = settings.genericReverbDamping;
-                        console.log('Loaded genericReverbDamping:', genericReverbDamping);
-                    }
-                    if (typeof settings.genericReverbPreDelay === 'number') {
-                        genericReverbPreDelay = settings.genericReverbPreDelay;
-                        console.log('Loaded genericReverbPreDelay:', genericReverbPreDelay);
-                    }
-                    if (typeof settings.genericReverbType === 'string') {
-                        genericReverbType = settings.genericReverbType;
-                        console.log('Loaded genericReverbType:', genericReverbType);
-                    }
-                    if (typeof settings.loopMode === 'string') {
-                        loopMode = settings.loopMode as typeof loopMode;
-                        console.log('Loaded loopMode:', loopMode);
-                    }
-                    if (typeof settings.isShuffling === 'boolean') {
-                        isShuffling = settings.isShuffling;
-                        console.log('Loaded isShuffling:', isShuffling);
-                    }
-                    console.log('Player.svelte: Loaded settings from localStorage.', settings);
                 } catch (e) {
-                    console.error('Player.svelte: Failed to parse settings from localStorage:', e);
+                    console.error('Player.svelte: Failed to parse player UI settings from localStorage:', e);
                 }
-            } else {
-                console.log('Player.svelte: No settings found in localStorage. Using defaults.');
-                // Explicitly set all controllable states to their default/inactive state
-                isShuffling = false;
-                loopMode = 'none';
-                eqGains = bands.map(b => b.gain); // Reset to initial flat if no settings
-                convolverEnabled = false;
-                convolverMix = 0.3; // Default mix
-                selectedIrUrl = null; // No IR selected by default
-                genericReverbEnabled = false;
-                genericReverbMix = 0.2; // Default generic reverb mix
-                genericReverbDecay = 0.6; // Default decay
-                genericReverbDamping = 6000; // Default damping
-                genericReverbPreDelay = 0.02; // Default pre-delay
-                genericReverbType = 'hall'; // Default generic reverb type
             }
         }
     }
 
-    function saveSettings() {
+    // Function to save player UI-specific settings
+    function savePlayerUiSettings() {
         if (typeof window !== 'undefined' && window.localStorage) {
-            const settingsToSave = {
-                eqGains: [...eqGains], // Use spread to ensure reactivity if array reference isn't changed elsewhere
-                convolverEnabled,
-                convolverMix,
-                selectedIrUrl,
-                genericReverbEnabled,
-                genericReverbMix,
-                genericReverbDecay,
-                genericReverbDamping,
-                genericReverbPreDelay,
-                genericReverbType,
-                loopMode,
-                isShuffling,
-            };
-            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(settingsToSave));
-            console.log('Player.svelte: Settings saved to localStorage.', settingsToSave);
-        }
-    }
-    // --- End Local Storage ---
-
-    // Function to configure generic reverb based on type
-    function configureGenericReverb(type: string) {
-        // This function now acts as a preset loader for the user-controllable parameters.
-        // The core delay times of the reverb architecture are fixed.
-        if (!combFilters.length) {
-            console.warn('Generic reverb nodes not initialized yet for configuration.');
-            return;
-        }
-
-        // These types now act as presets for the user-controllable parameters
-        switch (type) {
-            case 'room':
-                genericReverbDecay = 0.5;
-                genericReverbDamping = 8000;
-                break;
-            case 'hall':
-                genericReverbDecay = 0.7;
-                genericReverbDamping = 5000;
-                break;
-            case 'plate':
-                genericReverbDecay = 0.8;
-                genericReverbDamping = 12000; // Plates are bright
-                break;
-            case 'cathedral':
-                genericReverbDecay = 0.9;
-                genericReverbDamping = 3500; // Large spaces are very damped
-                break;
-            case 'spring': // Approximate spring reverb characteristics
-                genericReverbDecay = 0.85;
-                genericReverbDamping = 10000; // Springy and bright
-                break;
-            default: // Default to hall if type is unrecognized
-                genericReverbDecay = 0.7;
-                genericReverbDamping = 5000;
-                break;
-        }
-        // Force an update after changing preset values
-        updateEffectsConnections();
-        console.log(`Player.svelte: Generic reverb preset set to "${type}".`);
-    }
-
-    // Function to load the impulse response audio file (now in Player.svelte)
-    async function loadImpulseResponse(irUrl: string | null) {
-        if (!irUrl || !audioContext) {
-            impulseResponseBuffer = null;
-            if (convolverNode) convolverNode.buffer = null; // Clear existing buffer
-            console.log('Player.svelte: No IR URL provided or audioContext not ready. Clearing convolver buffer.');
-            updateEffectsConnections(); // Update connections to reflect no reverb
-            return;
-        }
-
-        try {
-            console.log(`Player.svelte: Loading impulse response from ${irUrl}...`);
-            const response = await fetch(irUrl);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const arrayBuffer = await response.arrayBuffer();
-            impulseResponseBuffer = await audioContext.decodeAudioData(arrayBuffer);
-            if (convolverNode) {
-                convolverNode.buffer = impulseResponseBuffer;
-                console.log(`Player.svelte: Impulse response for ${irUrl} loaded and set.`);
-                updateEffectsConnections(); // Re-evaluate connections after buffer loads
-            }
-        } catch (error) {
-            console.error(`Player.svelte: Error loading impulse response from ${irUrl}:`, error);
-            impulseResponseBuffer = null;
-            if (convolverNode) convolverNode.buffer = null;
-            updateEffectsConnections(); // Update connections to reflect error
-        }
-    }
-
-    // Function to manage all effects connections based on states
-    function updateEffectsConnections() {
-        if (!convolverNode || !convolverDryGainNode || !convolverWetGainNode ||
-            !genericReverbPreDelayNode || !genericReverbOutputGain || !combFilters.length) return;
-
-        // --- Convolver Reverb (IR) Logic ---
-        if (convolverEnabled && impulseResponseBuffer && convolverNode.buffer) {
-            convolverWetGainNode.gain.value = convolverMix;
-            convolverDryGainNode.gain.value = 1 - convolverMix; // Blend dry/wet for convolver
-        } else {
-            convolverWetGainNode.gain.value = 0; // Disable wet signal
-            convolverDryGainNode.gain.value = 1; // Full dry signal if convolver is off
-        }
-
-        // --- Generic Reverb Logic ---
-        if (genericReverbEnabled) {
-            genericReverbPreDelayNode.delayTime.value = genericReverbPreDelay;
-            genericReverbOutputGain.gain.value = genericReverbMix; // Control overall output level of generic reverb
-            
-            // Update all parallel comb filters with Decay and Damping values
-            for (const comb of combFilters) {
-                comb.feedback.gain.value = genericReverbDecay;
-                comb.filter.frequency.value = genericReverbDamping;
-            }
-        } else {
-            genericReverbOutputGain.gain.value = 0; // Disable generic reverb output
-            // Kill the feedback loops to stop the reverb tail immediately
-            for (const comb of combFilters) {
-                comb.feedback.gain.value = 0;
-            }
+            const uiSettingsToSave = { showEq };
+            localStorage.setItem(PLAYER_UI_LOCAL_STORAGE_KEY, JSON.stringify(uiSettingsToSave));
+            console.log('Player.svelte: UI settings saved:', uiSettingsToSave);
         }
     }
 
     onMount(async () => {
-        // Load settings from localStorage first
-        loadSettings();
+        // 1. Load player UI settings (e.g., showEq)
+        loadPlayerUiSettings();
 
-        // Initialize AudioContext
-        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        console.log('Player.svelte onMount: AudioContext initialized. State:', audioContext.state);
+        // 2. Subscribe to playerStore for playback state
+        const unsubscribePlayer = playerStore.subscribe((state: PlayerState) => {
+            currentSong = state.currentSong;
+            isPlaying = state.isPlaying;
+            progress = state.progress;
+            volume = state.volume;
+            isShuffling = state.isShuffling;
+            loopMode = state.loopMode;
 
-        // Attempt to resume AudioContext immediately if suspended (required by many browsers for autoplay)
-        if (audioContext.state === 'suspended') {
-            audioContext.resume().then(() => {
-                console.log('Player.svelte onMount: AudioContext resumed after initial suspend.');
-            }).catch(e => console.error('Player.svelte onMount: Error resuming AudioContext:', e));
-        }
+            // Inform audioEffectsStore about master volume changes
+            audioEffectsStore.setMasterVolume(volume);
 
-        // Create a MediaElementSourceNode from the audio element
-        sourceNode = audioContext.createMediaElementSource(audioElement);
-        console.log('Player.svelte onMount: MediaElementAudioSourceNode created.');
-        console.log('Player.svelte onMount: audioElement crossorigin status:', audioElement.crossOrigin);
-
-        // Create EQ filter nodes
-        filterNodes = bands.map((band, i) => {
-            const filter = audioContext.createBiquadFilter();
-            filter.type = band.type as BiquadFilterType;
-            filter.frequency.value = band.frequency;
-            filter.Q.value = band.q;
-            filter.gain.value = eqGains[i]; // Set initial gain from state (which is loaded from localStorage)
-            console.log(`Player.svelte onMount: Created filter for ${band.frequency}Hz (${band.type}) with gain ${eqGains[i]}.`);
-            return filter;
+            // If currentSong changes and is not null, load its audioUrl into the HTMLAudioElement
+            if (audioElement && currentSong && audioElement.src !== currentSong.audioUrl) {
+                audioElement.src = currentSong.audioUrl;
+                audioElement.load();
+                console.log('Player.svelte subscribe: New song src loaded for:', currentSong.name);
+            }
         });
 
-        // Create ConvolverNode and its Dry/Wet GainNodes
-        convolverNode = audioContext.createConvolver();
-        convolverDryGainNode = audioContext.createGain();
-        convolverWetGainNode = audioContext.createGain();
-        console.log('Player.svelte onMount: Convolver and its Dry/Wet GainNodes created.');
+        // 3. Subscribe to audioEffectsStore for effect state updates
+        const unsubscribeAudioEffects = audioEffectsStore.subscribe(state => {
+            audioEffectsState = state; // Update local reactive variable
+        });
 
-        // --- Create Generic Reverb Nodes (Freeverb-style architecture) ---
-        genericReverbPreDelayNode = audioContext.createDelay(0.5); // Max 0.5s pre-delay
-        genericReverbOutputGain = audioContext.createGain();
-        combMergerNode = audioContext.createGain();
-        combMergerNode.gain.value = 1 / 4; // Average the 4 comb filter outputs to prevent clipping
-
-        const combDelayTimes = [0.0297, 0.0371, 0.0411, 0.0437]; // Prime-based delay times in seconds
-        for (const time of combDelayTimes) {
-            const delay = audioContext.createDelay(1.0);
-            delay.delayTime.value = time;
-
-            const feedback = audioContext.createGain();
-            const filter = audioContext.createBiquadFilter();
-            filter.type = 'lowpass';
-            filter.Q.value = 0.7;
-
-            combFilters.push({ delay, feedback, filter });
-        }
-
-        const allPassFrequencies = [225, 556]; // Frequencies for all-pass diffusers
-        for (const freq of allPassFrequencies) {
-            const allpass = audioContext.createBiquadFilter();
-            allpass.type = 'allpass';
-            allpass.frequency.value = freq;
-            allPassFilters.push(allpass);
-        }
-        console.log('Player.svelte onMount: Generic Reverb (Freeverb-style) nodes created.');
-
-
-        // Configure generic reverb with loaded type
-        configureGenericReverb(genericReverbType); // Call to set initial parameters based on loaded type
-
-        // Create AnalyserNode and Master Gain Node
-        analyserNode = audioContext.createAnalyser();
-        analyserNode.fftSize = 256;
-        masterGainNode = audioContext.createGain(); // Overall volume control for Web Audio API
-        masterGainNode.gain.value = volume; // Set initial volume from store
-        console.log('Player.svelte onMount: Analyser and Master Gain Node created.');
-
-        // --- Fetch available IR files ---
-        try {
-            const response = await fetch('/api/irs');
-            if (!response.ok) throw new Error('Failed to fetch IR list');
-            availableIrs = await response.json();
-            console.log('Player.svelte onMount: Available IRs:', availableIrs);
-            // If selectedIrUrl was loaded from localStorage, ensure it's in availableIrs
-            if (selectedIrUrl && !availableIrs.includes(selectedIrUrl)) {
-                 console.warn(`Player.svelte onMount: Stored IR URL (${selectedIrUrl}) not found in available IRs. Clearing selection.`);
-                 selectedIrUrl = null; // Clear if not available
-            } else if (!selectedIrUrl && availableIrs.length > 0) {
-                selectedIrUrl = availableIrs[0]; // If no IR was selected, default to the first available
-                console.log('Player.svelte onMount: Defaulting selected IR to first available:', selectedIrUrl);
-            }
-        } catch (error) {
-            console.error('Player.svelte onMount: Error fetching available IRs:', error);
-        }
-
-        // Set initial effects states
-        updateEffectsConnections(); // Initialize all dry/wet/reverb gains
-
-        // --- Establish the FULL and PERMANENT audio graph ---
-        // 1. Source -> EQ Chain
-        let currentAudioNode: AudioNode = sourceNode;
-        if (filterNodes.length > 0) {
-            currentAudioNode.connect(filterNodes[0]);
-            for (let i = 0; i < filterNodes.length - 1; i++) {
-                filterNodes[i].connect(filterNodes[i+1]);
-            }
-            currentAudioNode = filterNodes[filterNodes.length - 1]; // Output of EQ chain
-            console.log('Player.svelte onMount: EQ chain connected.');
+        // 4. Initialize the audio effects system
+        // Pass the HTMLAudioElement and initial volume for setup
+        // Ensure audioElement is available before calling init
+        if (audioElement) {
+             await audioEffectsStore.init(audioElement, volume);
         } else {
-            console.log('Player.svelte onMount: No EQ filters configured, sourceNode connects directly to next stage.');
+            console.error("Player.svelte: audioElement is not available on mount!");
         }
-
-        // 2. EQ Chain Output -> Split into multiple paths (Convolver dry/wet, Generic Reverb)
-        currentAudioNode.connect(convolverDryGainNode); // Dry path for convolver mix
-        currentAudioNode.connect(convolverNode);       // Wet path for convolver
-        currentAudioNode.connect(genericReverbPreDelayNode);  // Input for generic reverb starts with pre-delay
-        console.log('Player.svelte onMount: EQ output branched to Convolver dry/wet and Generic Reverb.');
-
-        // Set up generic reverb routing
-        // PreDelay -> All Comb Filters
-        genericReverbPreDelayNode.connect(combMergerNode); // A bit of early reflection
-        for (const comb of combFilters) {
-            genericReverbPreDelayNode.connect(comb.delay);
-
-            // Set up feedback loop for each comb filter
-            comb.delay.connect(comb.feedback);
-            comb.feedback.connect(comb.filter);
-            comb.filter.connect(comb.delay);
-
-            // Connect comb output to the merger
-            comb.delay.connect(combMergerNode);
-        }
-
-        // Comb Merger -> Series All-Pass Filters -> Output Gain
-        combMergerNode.connect(allPassFilters[0]);
-        allPassFilters[0].connect(allPassFilters[1]);
-        allPassFilters[1].connect(genericReverbOutputGain);
         
-        // 3. All effect paths -> Analyser -> Master Gain -> Destination
-        convolverDryGainNode.connect(analyserNode);   // Convolver dry path
-        convolverNode.connect(convolverWetGainNode); // Convolver feeds its wet gain
-        convolverWetGainNode.connect(analyserNode);  // Convolver wet path
-        genericReverbOutputGain.connect(analyserNode); // Generic reverb path
+        // Ensure the audio element's own volume is always maxed, so Web Audio API controls it
+        if (audioElement) {
+            audioElement.volume = 1;
+            console.log('Player.svelte onMount: audioElement.volume set to 1 (controlled by Web Audio API).');
+        }
 
-        analyserNode.connect(masterGainNode); // Analyser feeds into master volume
-        masterGainNode.connect(audioContext.destination); // Master volume feeds to speakers
-        console.log('Player.svelte onMount: Full audio graph (Source -> EQ -> (Convolver dry/wet + Generic Reverb) -> Analyser -> Master Gain -> Destination) established.');
-
-        // Ensure the audio element's own volume is always maxed, so we control all volume via masterGainNode
-        audioElement.volume = 1;
-        console.log('Player.svelte onMount: audioElement.volume set to 1.');
-
-        // Ensure the audioContext is resumed on user interaction (required by many browsers)
+        // 5. Add event listeners to resume AudioContext (browser policy)
         const resumeAudioContext = () => {
-            if (audioContext.state === 'suspended') {
-                audioContext.resume().then(() => {
+            if (audioEffectsState?.audioContext?.state === 'suspended') {
+                audioEffectsState.audioContext.resume().then(() => {
                     console.log('Player.svelte: AudioContext resumed by user interaction.');
-                }).catch(e => console.error('Player.svelte: Error resuming AudioContext on user interaction:', e));
+                }).catch(e => console.error('Player.svelte: Error resuming AudioContext:', e));
             }
         };
         document.addEventListener('click', resumeAudioContext);
         document.addEventListener('keydown', resumeAudioContext);
 
+        // 6. Cleanup on component destroy
         onDestroy(() => {
             document.removeEventListener('click', resumeAudioContext);
             document.removeEventListener('keydown', resumeAudioContext);
-            if (audioContext) {
-                audioContext.close(); // Clean up AudioContext
-                console.log('Player.svelte onDestroy: AudioContext closed.');
-            }
+            unsubscribePlayer();
+            unsubscribeAudioEffects();
+            audioEffectsStore.destroy(); // Clean up AudioContext and effects state
         });
-    });
-
-    // Update local state when store changes
-    playerStore.subscribe((state: PlayerState) => {
-        // These are coming from the store, which should also be persisted or have initial defaults
-        currentSong = state.currentSong;
-        isPlaying = state.isPlaying;
-        progress = state.progress;
-        volume = state.volume;
-        isShuffling = state.isShuffling;
-        loopMode = state.loopMode; // Update local loopMode state
-        if (masterGainNode) {
-            masterGainNode.gain.value = volume;
-        }
     });
 
     // Reactive statement to handle song changes and play/pause
     $: {
-        if (audioElement && currentSong && audioContext) {
-            if (audioElement.src !== currentSong.audioUrl) {
-                audioElement.src = currentSong.audioUrl;
-                audioElement.load();
-                console.log('Player.svelte reactive: New song loaded:', currentSong.name);
-            }
+        if (audioElement && currentSong && audioEffectsState?.audioContext) {
             if (isPlaying) {
-                if (audioContext.state === 'suspended') {
+                // Check and resume AudioContext if suspended, then play
+                if (audioEffectsState.audioContext.state === 'suspended') {
                     console.log('Player.svelte reactive: Attempting to resume AudioContext before playing.');
-                    audioContext.resume().then(() => {
+                    audioEffectsState.audioContext.resume().then(() => {
                         audioElement.play().catch((e: Error) => console.error("Player.svelte reactive: Error playing audio (resume then play):", e));
                     });
                 } else {
@@ -492,20 +160,14 @@
                 audioElement.pause();
                 console.log('Player.svelte reactive: Audio paused.');
             }
+        } else if (audioElement && !currentSong && isPlaying) {
+             // If no current song but isPlaying somehow, stop playback
+             playerStore.pausePlaying();
         }
     }
 
-    // Reactive statement to load new IR when selectedIrUrl changes
-    $: selectedIrUrl, loadImpulseResponse(selectedIrUrl);
-
-    // Reactive statements to update audio node parameters when state changes (including new generic reverb)
-    $: eqGains, filterNodes.forEach((filter, i) => { if (filter) filter.gain.value = eqGains[i]; });
-    $: convolverEnabled, convolverMix, genericReverbEnabled, genericReverbMix, genericReverbDecay, genericReverbDamping, genericReverbPreDelay, updateEffectsConnections();
-    // Reactive statement for generic reverb type change
-    $: genericReverbType, configureGenericReverb(genericReverbType);
-
-    // Reactive statement to save settings when any of them change
-    $: eqGains, convolverEnabled, convolverMix, selectedIrUrl, genericReverbEnabled, genericReverbMix, genericReverbDecay, genericReverbDamping, genericReverbPreDelay, genericReverbType, loopMode, isShuffling, saveSettings();
+    // Reactive statement to save `showEq` state when it changes
+    $: showEq, savePlayerUiSettings();
 
     // Function to format duration (seconds to MM:SS)
     function formatTime(seconds: number | null): string {
@@ -558,25 +220,21 @@
         }
     }
 
-    // Simplified type, cast inside the function
     function handleVolumeChange(event: Event) {
-        // We know this input is an HTMLInputElement because of type="range" and its context
         const newVolume = (event.currentTarget as HTMLInputElement).valueAsNumber / 100;
-        playerStore.setVolume(newVolume);
+        playerStore.setVolume(newVolume); // playerStore handles its own saving
     }
 
-    // Simplified type, cast inside the function
     function handleProgressBarChange(event: Event) {
         if (audioElement && currentSong && duration > 0) {
-            // We know this input is an HTMLInputElement because of type="range" and its context
             const newProgress = ((event.currentTarget as HTMLInputElement).valueAsNumber / 100) * duration;
             audioElement.currentTime = newProgress;
-            playerStore.updateProgress(newProgress);
+            playerStore.updateProgress(newProgress); // playerStore handles its own saving
         }
     }
 
     function toggleEqVisibility() {
-        showEq = !showEq;
+        showEq = !showEq; // This reactive statement will trigger savePlayerUiSettings()
         console.log('Player.svelte toggleEqVisibility: EQ UI visibility toggled to', showEq);
     }
 </script>
@@ -655,11 +313,11 @@
         <button class="text-text-subdued hover:text-text-base"><ListMusic size={18} /></button>
         <!-- Button to toggle EQ visibility -->
         <button class="text-text-subdued hover:text-text-base" on:click={toggleEqVisibility} aria-label="Toggle Equalizer">
-            <Laptop2 size={18} />
+            <SlidersHorizontal size={18} />
         </button>
-        <!-- Shuffle Button (already togglable) -->
+        <!-- Shuffle Button -->
         <button
-            class="text-text-subdued hover:text-text-base"
+            class="text-text-subdued hover:text-text-base shuffle-button"
             class:active={isShuffling}
             on:click={playerStore.toggleShuffle}
             aria-label="Toggle Shuffle"
@@ -669,7 +327,7 @@
         </button>
         <!-- Loop Button -->
         <button
-            class="text-text-subdued hover:text-text-base"
+            class="text-text-subdued hover:text-text-base repeat-button"
             class:active={loopMode !== 'none'}
             on:click={playerStore.toggleLoopMode}
             aria-label="Toggle Loop Mode"
@@ -705,17 +363,17 @@
 </footer>
 
 <!-- EQ Component Overlay -->
-{#if showEq && audioContext && sourceNode && masterGainNode}
+{#if showEq && audioEffectsState?.audioContext && audioEffectsState?.masterGainNode && audioEffectsState?.convolverNode}
     <div class="eq-overlay">
         <Eq
-            {audioContext}
-            {filterNodes}
-            {bands}
+            audioContext={audioEffectsState.audioContext}
+            filterNodes={audioEffectsState.filterNodes}
+            bands={initialEqBands}
             bind:eqGains={eqGains}
-            {convolverNode}
+            convolverNode={audioEffectsState.convolverNode}
             bind:convolverEnabled={convolverEnabled}
             bind:convolverMix={convolverMix}
-            {impulseResponseBuffer}
+            impulseResponseBuffer={impulseResponseBuffer}
             bind:availableIrs={availableIrs}
             bind:selectedIrUrl={selectedIrUrl}
             bind:reverbEnabled={genericReverbEnabled}
@@ -724,6 +382,19 @@
             bind:reverbDamping={genericReverbDamping}
             bind:reverbPreDelay={genericReverbPreDelay}
             bind:reverbType={genericReverbType}
+            
+
+            on:updateEqGain={(e) => audioEffectsStore.updateEqGain(e.detail.index, e.detail.value)}
+            on:applyEqPreset={(e) => audioEffectsStore.applyEqPreset(e.detail.gains)}
+            on:selectIr={(e) => audioEffectsStore.selectIr(e.detail.url)}
+            on:selectReverbType={(e) => audioEffectsStore.setGenericReverbType(e.detail.type)}
+            on:toggleConvolver={(e) => audioEffectsStore.toggleConvolver(e.detail.enabled)}
+            on:setConvolverMix={(e) => audioEffectsStore.setConvolverMix(e.detail.mix)}
+            on:toggleReverb={(e) => audioEffectsStore.toggleGenericReverb(e.detail.enabled)}
+            on:setReverbMix={(e) => audioEffectsStore.setGenericReverbMix(e.detail.mix)}
+            on:setReverbDecay={(e) => audioEffectsStore.setGenericReverbDecay(e.detail.decay)}
+            on:setReverbDamping={(e) => audioEffectsStore.setGenericReverbDamping(e.detail.damping)}
+            on:setReverbPreDelay={(e) => audioEffectsStore.setGenericReverbPreDelay(e.detail.preDelay)}
         />
     </div>
 {/if}
@@ -798,7 +469,7 @@
         width: 100px;
     }
     .h-1 {
-        height: 4px;
+        height: 2px; /* Made the slider track thinner */
     }
     .bg-background-elevated-base {
         background-color: var(--background-elevated-base);
@@ -824,7 +495,7 @@
         border-radius: 50%;
         background: #fff; /* White thumb */
         cursor: pointer;
-        margin-top: -4px; /* Adjust to center thumb vertically */
+        margin-top: -5px; /* Re-centered thumb for 2px track */
         box-shadow: 0 0 0 2px rgba(0,0,0,0.2);
         display: none; /* Hide by default */
     }
@@ -839,7 +510,7 @@
     .range-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
         width: 100%;
-        height: 4px; /* Match the track height */
+        height: 2px; /* Match the new track height */
         background: transparent; /* Track is handled by the div below */
         border-radius: 2px;
     }
@@ -864,7 +535,7 @@
     .range-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
         width: 100%;
-        height: 4px;
+        height: 2px; /* Match the new track height */
         background: transparent;
         border-radius: 2px;
     }
@@ -890,7 +561,7 @@
     .range-slider::-ms-track,
     .volume-slider::-ms-track {
         width: 100%;
-        height: 4px;
+        height: 2px; /* Match the new track height */
         background: transparent;
         border-radius: 2px;
         color: transparent; /* Hide default track */

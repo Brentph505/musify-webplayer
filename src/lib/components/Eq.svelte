@@ -1,147 +1,168 @@
 <script lang="ts">
-    import { createEventDispatcher, onMount } from 'svelte'; // Added onMount
+    import { onMount, createEventDispatcher } from 'svelte';
 
+    const dispatch = createEventDispatcher(); // Initialize dispatcher for custom events
+
+    // Exported props, now received from Player.svelte (which gets them from audioEffectsStore)
     export let audioContext: AudioContext;
     export let filterNodes: BiquadFilterNode[];
     export let bands: readonly ({ frequency: number; type: "lowshelf" | "peaking" | "highshelf"; q: number; gain: number; })[];
-    export let eqGains: number[];
-
+    export let eqGains: number[]; // Two-way bound
     export let convolverNode: ConvolverNode;
-    // Renamed for IR Reverb (Convolver)
-    export let convolverEnabled: boolean;
-    export let convolverMix: number;
+    export let convolverEnabled: boolean; // Two-way bound
+    export let convolverMix: number; // Two-way bound
     export let impulseResponseBuffer: AudioBuffer | null;
+    export let availableIrs: string[];
+    export let selectedIrUrl: string | null; // Two-way bound
+    export let reverbEnabled: boolean; // Generic reverb enabled, two-way bound
+    export let reverbMix: number; // Two-way bound
+    export let reverbDecay: number; // Two-way bound
+    export let reverbDamping: number; // Two-way bound
+    export let reverbPreDelay: number; // Two-way bound
+    export let reverbType: string = 'hall'; // Two-way bound
 
-    // New exports for IR file selection
-    export let availableIrs: string[]; // List of public URLs for IR files
-    export let selectedIrUrl: string | null; // Currently selected IR file URL
+    let irDropdownOpen: boolean = false;
+    let reverbTypeDropdownOpen: boolean = false;
+    let eqPresetDropdownOpen: boolean = false;
 
-    // New exports for Generic Reverb (Additional Reverb)
-    export let reverbEnabled: boolean; // For the generic reverb
-    export let reverbMix: number; // RENAMED from reverbAmount
-    export let reverbDecay: number; // NEW
-    export let reverbDamping: number; // NEW
-    export let reverbPreDelay: number; // NEW
-    export let reverbType: string = 'hall'; // New: reverb type (hall, plate, room, cathedral)
-
-    let irDropdownOpen: boolean = false; // State for custom IR dropdown visibility
-    let reverbTypeDropdownOpen: boolean = false; // State for reverb type dropdown
-    let eqPresetDropdownOpen: boolean = false; // NEW: State for EQ Preset dropdown
-
-    // Dispatcher not strictly needed for internal dropdowns if using svelte:window click handler
-    // const dispatch = createEventDispatcher();
-
-    // Available reverb types (as before)
+    // Available reverb types, including 'Custom'
     const reverbTypes = [
+        { value: 'room', label: 'Room' },
         { value: 'hall', label: 'Hall' },
         { value: 'plate', label: 'Plate' },
-        { value: 'room', label: 'Room' },
         { value: 'cathedral', label: 'Cathedral' },
-        { value: 'spring', label: 'Spring' }
+        { value: 'spring', label: 'Spring' },
+        { value: 'custom', label: 'Custom' }
     ];
 
-    // NEW: EQ Presets
-    // These gain values correspond to the 6 bands defined in Player.svelte
+    // EQ Presets
     const eqPresets = [
         { name: 'Flat', gains: [0, 0, 0, 0, 0, 0] },
-        { name: 'Bass Boost', gains: [6, 4, 2, 0, 0, 0] },
-        { name: 'Treble Boost', gains: [0, 0, 0, 2, 4, 6] },
-        { name: 'Vocal Boost', gains: [-2, -2, 4, 4, -2, -2] },
-        { name: 'Rock', gains: [4, 2, -2, 2, 4, 6] },
-        { name: 'Jazz', gains: [2, 0, 0, 2, 4, 0] },
-        { name: 'Pop', gains: [3, 1, -1, 2, 3, 2] },
-        { name: 'Dance/EDM', gains: [6, 4, 0, 2, 4, 5] },
-        { name: 'Classical', gains: [3, 0, -3, -3, 0, 3] },
-        { name: 'Live', gains: [0, 1, 2, 3, 2, 1] },
-        // Add a "Custom" preset to represent manual adjustments, gains will be dynamic
-        { name: 'Custom', gains: [] }
+        { name: 'Bass Boost', gains: [6, 4, 0, -2, -4, -6] },
+        { name: 'Vocal Boost', gains: [-4, 0, 4, 6, 4, 0] },
+        { name: 'Treble Boost', gains: [-6, -4, -2, 0, 4, 6] },
+        { name: 'Rock', gains: [4, 2, -2, 0, 3, 5] },
+        { name: 'Pop', gains: [3, 0, -1, 2, 4, 3] },
+        { name: 'Jazz', gains: [4, 2, 0, -2, -3, -4] },
     ];
 
-    // NEW: Variable to hold the currently selected preset name for display
     let selectedEqPresetName: string = 'Flat';
 
-    // Helper to determine if current eqGains match a predefined preset
+    // Helper to determine if current EQ gains match a preset
     function getMatchingPresetName(currentGains: number[]): string {
-        const matchingPreset = eqPresets.find(p => p.name !== 'Custom' && JSON.stringify(p.gains) === JSON.stringify(currentGains));
-        return matchingPreset ? matchingPreset.name : 'Custom';
+        for (const preset of eqPresets) {
+            // Check if all gains match with a small tolerance for floating point comparisons
+            if (preset.gains.every((g, i) => Math.abs(g - currentGains[i]) < 0.001)) {
+                return preset.name;
+            }
+        }
+        return 'Custom';
     }
 
-    // Initialize selectedEqPresetName on mount based on initial eqGains (loaded from Player.svelte, which uses localStorage)
     onMount(() => {
+        // Initialize selectedEqPresetName based on the initially loaded eqGains
         selectedEqPresetName = getMatchingPresetName(eqGains);
     });
 
-    // Reactive statement to update selectedEqPresetName when eqGains change manually
-    // This will set it to 'Custom' if the user adjusts sliders after selecting a preset.
+    // Reactive statement: whenever eqGains changes, update the selected preset name
     $: eqGains, selectedEqPresetName = getMatchingPresetName(eqGains);
 
-
-    // EQ Gain update handler (no change)
-    function updateGain(index: number, event: Event) {
+    // Event handlers for UI interaction, dispatching events for the parent to handle
+    function handleEqSliderChange(index: number, event: Event) {
         const value = (event.target as HTMLInputElement).valueAsNumber;
-        eqGains[index] = value;
+        eqGains[index] = value; // Update bound prop directly (important for Svelte reactivity)
+        dispatch('updateEqGain', { index, value }); // Notify parent for audio logic
     }
 
-    // NEW: Function to apply an EQ preset
-    function applyEqPreset(preset: typeof eqPresets[0]) {
-        if (preset.name === 'Custom') {
-            // 'Custom' preset means current settings are manually adjusted.
-            // No need to change eqGains unless we want to reset to 'Flat' or another default for 'Custom'.
-            // For now, it simply reflects the state.
-            selectedEqPresetName = 'Custom';
-        } else {
-            eqGains = [...preset.gains]; // Create a new array to ensure reactivity and propagate to Player.svelte
-            selectedEqPresetName = preset.name;
-        }
-        eqPresetDropdownOpen = false; // Close dropdown after selection
+    function handleApplyEqPreset(preset: typeof eqPresets[0]) {
+        eqGains = [...preset.gains]; // Update bound prop directly
+        selectedEqPresetName = preset.name;
+        eqPresetDropdownOpen = false;
+        dispatch('applyEqPreset', { gains: preset.gains }); // Notify parent for audio logic
     }
 
-    // Impulse Response Reverb (Convolver) Mix update handler (no change) - REMOVED, bind:value is sufficient
-
-    // Generic Reverb Amount update handler (no change) - REMOVED, bind:value is sufficient
-
-    // Function to extract just the filename for display (no change)
     function getFilenameFromUrl(url: string): string {
         const parts = url.split('/');
         return parts[parts.length - 1];
     }
 
-    // Custom dropdown handlers for IR (updated to close other dropdowns)
     function toggleIrDropdown() {
         irDropdownOpen = !irDropdownOpen;
         reverbTypeDropdownOpen = false;
-        eqPresetDropdownOpen = false; // Close other dropdowns
+        eqPresetDropdownOpen = false;
     }
 
-    function selectIr(url: string | null) {
-        selectedIrUrl = url;
+    function handleSelectIr(url: string | null) {
+        selectedIrUrl = url; // Update bound prop directly
         irDropdownOpen = false;
+        dispatch('selectIr', { url }); // Notify parent for audio logic
     }
 
-    // Custom dropdown handlers for Reverb Type (updated to close other dropdowns)
     function toggleReverbTypeDropdown() {
         reverbTypeDropdownOpen = !reverbTypeDropdownOpen;
         irDropdownOpen = false;
-        eqPresetDropdownOpen = false; // Close other dropdowns
+        eqPresetDropdownOpen = false;
     }
 
-    function selectReverbType(type: string) {
-        reverbType = type;
+    function handleSelectReverbType(type: string) {
+        reverbType = type; // Update bound prop directly
         reverbTypeDropdownOpen = false;
+        dispatch('selectReverbType', { type }); // Notify parent for audio logic
     }
 
-    // NEW: Custom dropdown handlers for EQ Presets
     function toggleEqPresetDropdown() {
         eqPresetDropdownOpen = !eqPresetDropdownOpen;
         irDropdownOpen = false;
-        reverbTypeDropdownOpen = false; // Close other dropdowns
+        reverbTypeDropdownOpen = false;
     }
 
-    // Handle clicks outside the dropdown to close it (updated to include new dropdown)
+    // Handlers for checkboxes and sliders, updating bound props and dispatching events
+    function handleConvolverToggle(event: Event) {
+        const enabled = (event.target as HTMLInputElement).checked;
+        convolverEnabled = enabled;
+        dispatch('toggleConvolver', { enabled });
+    }
+
+    function handleConvolverMixChange(event: Event) {
+        const mix = (event.target as HTMLInputElement).valueAsNumber;
+        convolverMix = mix;
+        dispatch('setConvolverMix', { mix });
+    }
+
+    function handleReverbToggle(event: Event) {
+        const enabled = (event.target as HTMLInputElement).checked;
+        reverbEnabled = enabled;
+        dispatch('toggleReverb', { enabled });
+    }
+
+    function handleReverbMixChange(event: Event) {
+        const mix = (event.target as HTMLInputElement).valueAsNumber;
+        reverbMix = mix;
+        dispatch('setReverbMix', { mix });
+    }
+
+    function handleReverbDecayChange(event: Event) {
+        const decay = (event.target as HTMLInputElement).valueAsNumber;
+        reverbDecay = decay;
+        dispatch('setReverbDecay', { decay });
+    }
+
+    function handleReverbDampingChange(event: Event) {
+        const damping = (event.target as HTMLInputElement).valueAsNumber;
+        reverbDamping = damping;
+        dispatch('setReverbDamping', { damping });
+    }
+
+    function handleReverbPreDelayChange(event: Event) {
+        const preDelay = (event.target as HTMLInputElement).valueAsNumber;
+        reverbPreDelay = preDelay;
+        dispatch('setReverbPreDelay', { preDelay });
+    }
+
     function handleClickOutside(event: MouseEvent) {
         const irDropdownElement = document.getElementById('ir-custom-dropdown');
         const reverbDropdownElement = document.getElementById('reverb-type-dropdown');
-        const eqPresetDropdownElement = document.getElementById('eq-preset-dropdown'); // NEW
+        const eqPresetDropdownElement = document.getElementById('eq-preset-dropdown');
 
         if (irDropdownElement && !irDropdownElement.contains(event.target as Node)) {
             irDropdownOpen = false;
@@ -149,7 +170,7 @@
         if (reverbDropdownElement && !reverbDropdownElement.contains(event.target as Node)) {
             reverbTypeDropdownOpen = false;
         }
-        if (eqPresetDropdownElement && !eqPresetDropdownElement.contains(event.target as Node)) { // NEW
+        if (eqPresetDropdownElement && !eqPresetDropdownElement.contains(event.target as Node)) {
             eqPresetDropdownOpen = false;
         }
     }
@@ -157,12 +178,11 @@
 
 <svelte:window on:click={handleClickOutside} />
 
-<!-- NEW: Wrapper div for scrolling -->
 <div class="eq-scroll-wrapper">
     <div class="eq-controls">
         <h3 class="title">Audio Effects</h3>
         
-        <!-- NEW: EQ Presets Section -->
+        <!-- EQ Presets Section -->
         <div class="eq-section">
             <h4 class="section-title">EQ Presets</h4>
             <div class="custom-dropdown-wrapper" id="eq-preset-dropdown">
@@ -171,14 +191,17 @@
                     <span class="arrow">▼</span>
                 </button>
                 {#if eqPresetDropdownOpen}
-                    <ul class="dropdown-menu">
+                    <ul class="dropdown-menu" role="menu">
                         {#each eqPresets as preset (preset.name)}
-                            <li
-                                class="dropdown-item"
-                                class:selected={preset.name === selectedEqPresetName}
-                                on:click={() => applyEqPreset(preset)}
-                            >
-                                {preset.name}
+                            <li role="presentation">
+                                <button
+                                    class="dropdown-item"
+                                    class:selected={preset.name === selectedEqPresetName}
+                                    on:click={() => handleApplyEqPreset(preset)}
+                                    role="menuitem"
+                                >
+                                    {preset.name}
+                                </button>
                             </li>
                         {/each}
                     </ul>
@@ -201,7 +224,7 @@
                             max="20"
                             step="0.1"
                             bind:value={eqGains[i]}
-                            on:input={(e) => updateGain(i, e)}
+                            on:input={(e) => handleEqSliderChange(i, e)}
                             class="horizontal-slider"
                         />
                     </div>
@@ -217,33 +240,39 @@
                 <div class="reverb-item">
                     <div class="reverb-header">
                         <span class="reverb-label">Impulse Response</span>
-                        <input type="checkbox" id="convolver-enable" bind:checked={convolverEnabled} disabled={!impulseResponseBuffer} />
+                        <input type="checkbox" id="convolver-enable" bind:checked={convolverEnabled} on:change={handleConvolverToggle} disabled={!impulseResponseBuffer} />
                     </div>
                     
                     <div class="custom-dropdown-wrapper" id="ir-custom-dropdown">
                         <button class="dropdown-toggle" on:click|stopPropagation={toggleIrDropdown} aria-expanded={irDropdownOpen}>
-                            {selectedIrUrl ? getFilenameFromUrl(selectedIrUrl) : 'Custom'}
+                            {selectedIrUrl ? getFilenameFromUrl(selectedIrUrl) : 'Custom IR'}
                             <span class="arrow">▼</span>
                         </button>
                         {#if irDropdownOpen}
-                            <ul class="dropdown-menu">
+                            <ul class="dropdown-menu" role="menu">
                                 {#if !availableIrs.length}
-                                    <li class="dropdown-item disabled">No IRs available</li>
+                                    <li class="dropdown-item disabled" role="presentation">No IRs available</li>
                                 {:else}
-                                    <li
-                                        class="dropdown-item"
-                                        class:selected={!selectedIrUrl}
-                                        on:click={() => selectIr(null)}
-                                    >
-                                        Custom
+                                    <li role="presentation">
+                                        <button
+                                            class="dropdown-item"
+                                            class:selected={!selectedIrUrl}
+                                            on:click={() => handleSelectIr(null)}
+                                            role="menuitem"
+                                        >
+                                            Custom IR
+                                        </button>
                                     </li>
                                     {#each availableIrs as irUrl (irUrl)}
-                                        <li
-                                            class="dropdown-item"
-                                            class:selected={irUrl === selectedIrUrl}
-                                            on:click={() => selectIr(irUrl)}
-                                        >
-                                            {getFilenameFromUrl(irUrl)}
+                                        <li role="presentation">
+                                            <button
+                                                class="dropdown-item"
+                                                class:selected={irUrl === selectedIrUrl}
+                                                on:click={() => handleSelectIr(irUrl)}
+                                                role="menuitem"
+                                            >
+                                                {getFilenameFromUrl(irUrl)}
+                                            </button>
                                         </li>
                                     {/each}
                                 {/if}
@@ -261,6 +290,7 @@
                                 max="1"
                                 step="0.01"
                                 bind:value={convolverMix}
+                                on:input={handleConvolverMixChange}
                                 class="horizontal-slider"
                             />
                             <span class="control-value">{(convolverMix * 100).toFixed(0)}%</span>
@@ -278,23 +308,26 @@
                 <div class="reverb-item">
                     <div class="reverb-header">
                         <span class="reverb-label">Standard</span>
-                        <input type="checkbox" id="generic-reverb-enable" bind:checked={reverbEnabled} />
+                        <input type="checkbox" id="generic-reverb-enable" bind:checked={reverbEnabled} on:change={handleReverbToggle} />
                     </div>
 
                     <div class="custom-dropdown-wrapper" id="reverb-type-dropdown">
                         <button class="dropdown-toggle" on:click|stopPropagation={toggleReverbTypeDropdown} aria-expanded={reverbTypeDropdownOpen}>
-                            {reverbTypes.find(r => r.value === reverbType)?.label || 'Hall'}
+                            {reverbTypes.find(r => r.value === reverbType)?.label || 'Custom'}
                             <span class="arrow">▼</span>
                         </button>
                         {#if reverbTypeDropdownOpen}
-                            <ul class="dropdown-menu">
-                                {#each reverbTypes as type}
-                                    <li
-                                        class="dropdown-item"
-                                        class:selected={type.value === reverbType}
-                                        on:click={() => selectReverbType(type.value)}
-                                    >
-                                        {type.label}
+                            <ul class="dropdown-menu" role="menu">
+                                {#each reverbTypes as type (type.value)}
+                                    <li role="presentation">
+                                        <button
+                                            class="dropdown-item"
+                                            class:selected={type.value === reverbType}
+                                            on:click={() => handleSelectReverbType(type.value)} 
+                                            role="menuitem"
+                                        >
+                                            {type.label}
+                                        </button>
                                     </li>
                                 {/each}
                             </ul>
@@ -310,6 +343,7 @@
                                 max="1"
                                 step="0.01"
                                 bind:value={reverbMix}
+                                on:input={handleReverbMixChange}
                                 class="horizontal-slider"
                             />
                             <span class="control-value">{(reverbMix * 100).toFixed(0)}%</span>
@@ -322,6 +356,7 @@
                                 max="0.95"
                                 step="0.01"
                                 bind:value={reverbDecay}
+                                on:input={handleReverbDecayChange}
                                 class="horizontal-slider"
                             />
                             <span class="control-value">{(reverbDecay * 100).toFixed(0)}%</span>
@@ -334,6 +369,7 @@
                                 max="15000"
                                 step="100"
                                 bind:value={reverbDamping}
+                                on:input={handleReverbDampingChange}
                                 class="horizontal-slider"
                             />
                             <span class="control-value">{reverbDamping.toFixed(0)}Hz</span>
@@ -346,6 +382,7 @@
                                 max="0.2"
                                 step="0.001"
                                 bind:value={reverbPreDelay}
+                                on:input={handleReverbPreDelayChange}
                                 class="horizontal-slider"
                             />
                             <span class="control-value">{(reverbPreDelay * 1000).toFixed(0)}ms</span>
@@ -665,5 +702,28 @@
         .reverb-grid {
             grid-template-columns: 1fr;
         }
+    }
+
+    /* Styles for the dropdown item buttons specifically */
+    .dropdown-menu button.dropdown-item {
+        background: none;
+        border: none;
+        color: inherit;
+        padding: 8px 10px;
+        text-align: left;
+        width: 100%;
+        display: block;
+        cursor: pointer;
+        font-size: 0.85em;
+    }
+
+    .dropdown-menu button.dropdown-item:hover {
+        background-color: #3a3a3a;
+    }
+
+    .dropdown-menu button.dropdown-item.selected {
+        background-color: #1DB954;
+        color: #000;
+        font-weight: bold;
     }
 </style>
