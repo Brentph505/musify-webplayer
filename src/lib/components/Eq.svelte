@@ -1,5 +1,8 @@
 <script lang="ts">
     import { onMount, createEventDispatcher } from 'svelte';
+    import Music from 'lucide-svelte/icons/music'; // Import Lucide icons
+    import Sliders from 'lucide-svelte/icons/sliders';
+    import Zap from 'lucide-svelte/icons/zap';
 
     const dispatch = createEventDispatcher(); // Initialize dispatcher for custom events
 
@@ -20,9 +23,19 @@
     export let reverbDamping: number; // Two-way bound
     export let reverbPreDelay: number; // Two-way bound
     export let reverbType: string = 'hall'; // Two-way bound
+    // NEW: Add props for reverb modulation
+    export let reverbModulationRate: number; // Two-way bound
+    export let reverbModulationDepth: number; // Two-way bound
+    // NEW: Add props for Dynamics Compressor
+    export let compressorEnabled: boolean; // Two-way bound
+    export let compressorThreshold: number; // Two-way bound
+    export let compressorKnee: number;     // Two-way bound
+    export let compressorRatio: number;    // Two-way bound
+    export let compressorAttack: number;   // Two-way bound
+    export let compressorRelease: number;  // Two-way bound
 
     let irDropdownOpen: boolean = false;
-    let reverbTypeDropdownOpen: boolean = false;
+    let reverbTypeDropdownOpen: boolean = false; // Still needed for the reverb type dropdown within the reverb card
     let eqPresetDropdownOpen: boolean = false;
 
     // Available reverb types, including 'Custom'
@@ -30,8 +43,8 @@
         { value: 'room', label: 'Room' },
         { value: 'hall', label: 'Hall' },
         { value: 'plate', label: 'Plate' },
-        { value: 'cathedral', label: 'Cathedral' },
-        { value: 'spring', label: 'Spring' },
+        { value: 'space', label: 'Space' }, // Changed from 'cathedral'
+        { value: 'studio', label: 'Studio' }, // Changed from 'spring'
         { value: 'custom', label: 'Custom' }
     ];
 
@@ -159,15 +172,66 @@
         dispatch('setReverbPreDelay', { preDelay });
     }
 
+    // NEW: Handlers for new reverb modulation parameters
+    function handleReverbModRateChange(event: Event) {
+        const rate = (event.target as HTMLInputElement).valueAsNumber;
+        reverbModulationRate = rate;
+        dispatch('setReverbModulationRate', { rate });
+    }
+
+    function handleReverbModDepthChange(event: Event) {
+        const depth = (event.target as HTMLInputElement).valueAsNumber;
+        reverbModulationDepth = depth;
+        dispatch('setReverbModulationDepth', { depth });
+    }
+
+    // NEW: Handlers for Dynamics Compressor parameters
+    function handleCompressorToggle(event: Event) {
+        const enabled = (event.target as HTMLInputElement).checked;
+        compressorEnabled = enabled;
+        dispatch('toggleCompressor', { enabled });
+    }
+
+    function handleCompressorThresholdChange(event: Event) {
+        const threshold = (event.target as HTMLInputElement).valueAsNumber;
+        compressorThreshold = threshold;
+        dispatch('setCompressorThreshold', { threshold });
+    }
+
+    function handleCompressorKneeChange(event: Event) {
+        const knee = (event.target as HTMLInputElement).valueAsNumber;
+        compressorKnee = knee;
+        dispatch('setCompressorKnee', { knee });
+    }
+
+    function handleCompressorRatioChange(event: Event) {
+        const ratio = (event.target as HTMLInputElement).valueAsNumber;
+        compressorRatio = ratio;
+        dispatch('setCompressorRatio', { ratio });
+    }
+
+    function handleCompressorAttackChange(event: Event) {
+        const attack = (event.target as HTMLInputElement).valueAsNumber;
+        compressorAttack = attack;
+        dispatch('setCompressorAttack', { attack });
+    }
+
+    function handleCompressorReleaseChange(event: Event) {
+        const release = (event.target as HTMLInputElement).valueAsNumber;
+        compressorRelease = release;
+        dispatch('setCompressorRelease', { release });
+    }
+
+
     function handleClickOutside(event: MouseEvent) {
         const irDropdownElement = document.getElementById('ir-custom-dropdown');
-        const reverbDropdownElement = document.getElementById('reverb-type-dropdown');
+        const reverbTypeDropdownElement = document.getElementById('reverb-type-dropdown'); // Use the specific ID for generic reverb type dropdown
         const eqPresetDropdownElement = document.getElementById('eq-preset-dropdown');
 
         if (irDropdownElement && !irDropdownElement.contains(event.target as Node)) {
             irDropdownOpen = false;
         }
-        if (reverbDropdownElement && !reverbDropdownElement.contains(event.target as Node)) {
+        if (reverbTypeDropdownElement && !reverbTypeDropdownElement.contains(event.target as Node)) {
             reverbTypeDropdownOpen = false;
         }
         if (eqPresetDropdownElement && !eqPresetDropdownElement.contains(event.target as Node)) {
@@ -179,219 +243,214 @@
 <svelte:window on:click={handleClickOutside} />
 
 <div class="eq-scroll-wrapper">
-    <div class="eq-controls">
-        <h3 class="title">Audio Effects</h3>
-        
-        <!-- EQ Presets Section -->
-        <div class="eq-section">
-            <h4 class="section-title">EQ Presets</h4>
-            <div class="custom-dropdown-wrapper" id="eq-preset-dropdown">
-                <button class="dropdown-toggle" on:click|stopPropagation={toggleEqPresetDropdown} aria-expanded={eqPresetDropdownOpen}>
-                    {selectedEqPresetName}
-                    <span class="arrow">▼</span>
-                </button>
-                {#if eqPresetDropdownOpen}
-                    <ul class="dropdown-menu" role="menu">
-                        {#each eqPresets as preset (preset.name)}
-                            <li role="presentation">
-                                <button
-                                    class="dropdown-item"
-                                    class:selected={preset.name === selectedEqPresetName}
-                                    on:click={() => handleApplyEqPreset(preset)}
-                                    role="menuitem"
-                                >
-                                    {preset.name}
-                                </button>
-                            </li>
-                        {/each}
-                    </ul>
-                {/if}
-            </div>
+  <div class="eq-controls">
+    <h3 class="title">
+      <Music size={24} />
+      Audio Effects
+    </h3>
+
+    <!-- EQ Presets & Sliders -->
+    <div class="card">
+      <div class="card-header">
+        <span>EQ Presets</span>
+        <div class="custom-dropdown-wrapper" id="eq-preset-dropdown">
+          <button class="dropdown-toggle" on:click|stopPropagation={toggleEqPresetDropdown} aria-expanded={eqPresetDropdownOpen}>
+            {selectedEqPresetName} <span class="arrow">▼</span>
+          </button>
+          {#if eqPresetDropdownOpen}
+            <ul class="dropdown-menu" role="menu">
+              {#each eqPresets as preset (preset.name)}
+                <li role="presentation">
+                  <button
+                    class="dropdown-item"
+                    class:selected={preset.name === selectedEqPresetName}
+                    on:click={() => handleApplyEqPreset(preset)}
+                    role="menuitem"
+                  >
+                    {preset.name}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </div>
+      </div>
 
-        <!-- EQ Sliders Section -->
-        <div class="eq-section">
-            <h4 class="section-title">Equalizer</h4>
-            <div class="eq-grid">
-                {#each bands as band, i}
-                    <div class="eq-item">
-                        <label for={`eq-slider-${i}`}>{band.frequency}Hz</label>
-                        <span class="gain-value">{eqGains[i].toFixed(1)}dB</span>
-                        <input
-                            type="range"
-                            id={`eq-slider-${i}`}
-                            min="-20"
-                            max="20"
-                            step="0.1"
-                            bind:value={eqGains[i]}
-                            on:input={(e) => handleEqSliderChange(i, e)}
-                            class="horizontal-slider"
-                        />
-                    </div>
-                {/each}
-            </div>
-        </div>
-
-        <!-- Reverb Section -->
-        <div class="reverb-section">
-            <h4 class="section-title">Reverb</h4>
-            <div class="reverb-grid">
-                <!-- IR Reverb -->
-                <div class="reverb-item">
-                    <div class="reverb-header">
-                        <span class="reverb-label">Impulse Response</span>
-                        <input type="checkbox" id="convolver-enable" bind:checked={convolverEnabled} on:change={handleConvolverToggle} disabled={!impulseResponseBuffer} />
-                    </div>
-                    
-                    <div class="custom-dropdown-wrapper" id="ir-custom-dropdown">
-                        <button class="dropdown-toggle" on:click|stopPropagation={toggleIrDropdown} aria-expanded={irDropdownOpen}>
-                            {selectedIrUrl ? getFilenameFromUrl(selectedIrUrl) : 'Custom IR'}
-                            <span class="arrow">▼</span>
-                        </button>
-                        {#if irDropdownOpen}
-                            <ul class="dropdown-menu" role="menu">
-                                {#if !availableIrs.length}
-                                    <li class="dropdown-item disabled" role="presentation">No IRs available</li>
-                                {:else}
-                                    <li role="presentation">
-                                        <button
-                                            class="dropdown-item"
-                                            class:selected={!selectedIrUrl}
-                                            on:click={() => handleSelectIr(null)}
-                                            role="menuitem"
-                                        >
-                                            Custom IR
-                                        </button>
-                                    </li>
-                                    {#each availableIrs as irUrl (irUrl)}
-                                        <li role="presentation">
-                                            <button
-                                                class="dropdown-item"
-                                                class:selected={irUrl === selectedIrUrl}
-                                                on:click={() => handleSelectIr(irUrl)}
-                                                role="menuitem"
-                                            >
-                                                {getFilenameFromUrl(irUrl)}
-                                            </button>
-                                        </li>
-                                    {/each}
-                                {/if}
-                            </ul>
-                        {/if}
-                    </div>
-
-                    {#if convolverEnabled}
-                        <div class="slider-control">
-                            <span class="control-label">Mix:</span>
-                            <input
-                                type="range"
-                                id="convolver-mix"
-                                min="0"
-                                max="1"
-                                step="0.01"
-                                bind:value={convolverMix}
-                                on:input={handleConvolverMixChange}
-                                class="horizontal-slider"
-                            />
-                            <span class="control-value">{(convolverMix * 100).toFixed(0)}%</span>
-                        </div>
-                    {/if}
-                    
-                    {#if !impulseResponseBuffer && selectedIrUrl}
-                        <p class="status-message loading">Loading...</p>
-                    {:else if !selectedIrUrl}
-                        <p class="status-message info">No IR selected</p>
-                    {/if}
-                </div>
-
-                <!-- Standard Reverb -->
-                <div class="reverb-item">
-                    <div class="reverb-header">
-                        <span class="reverb-label">Standard</span>
-                        <input type="checkbox" id="generic-reverb-enable" bind:checked={reverbEnabled} on:change={handleReverbToggle} />
-                    </div>
-
-                    <div class="custom-dropdown-wrapper" id="reverb-type-dropdown">
-                        <button class="dropdown-toggle" on:click|stopPropagation={toggleReverbTypeDropdown} aria-expanded={reverbTypeDropdownOpen}>
-                            {reverbTypes.find(r => r.value === reverbType)?.label || 'Custom'}
-                            <span class="arrow">▼</span>
-                        </button>
-                        {#if reverbTypeDropdownOpen}
-                            <ul class="dropdown-menu" role="menu">
-                                {#each reverbTypes as type (type.value)}
-                                    <li role="presentation">
-                                        <button
-                                            class="dropdown-item"
-                                            class:selected={type.value === reverbType}
-                                            on:click={() => handleSelectReverbType(type.value)} 
-                                            role="menuitem"
-                                        >
-                                            {type.label}
-                                        </button>
-                                    </li>
-                                {/each}
-                            </ul>
-                        {/if}
-                    </div>
-
-                    {#if reverbEnabled}
-                        <div class="slider-control">
-                            <span class="control-label">Mix:</span>
-                            <input
-                                type="range"
-                                min="0"
-                                max="1"
-                                step="0.01"
-                                bind:value={reverbMix}
-                                on:input={handleReverbMixChange}
-                                class="horizontal-slider"
-                            />
-                            <span class="control-value">{(reverbMix * 100).toFixed(0)}%</span>
-                        </div>
-                        <div class="slider-control">
-                            <span class="control-label">Decay:</span>
-                            <input
-                                type="range"
-                                min="0"
-                                max="0.95"
-                                step="0.01"
-                                bind:value={reverbDecay}
-                                on:input={handleReverbDecayChange}
-                                class="horizontal-slider"
-                            />
-                            <span class="control-value">{(reverbDecay * 100).toFixed(0)}%</span>
-                        </div>
-                        <div class="slider-control">
-                            <span class="control-label">Damping:</span>
-                            <input
-                                type="range"
-                                min="500"
-                                max="15000"
-                                step="100"
-                                bind:value={reverbDamping}
-                                on:input={handleReverbDampingChange}
-                                class="horizontal-slider"
-                            />
-                            <span class="control-value">{reverbDamping.toFixed(0)}Hz</span>
-                        </div>
-                        <div class="slider-control">
-                            <span class="control-label">Pre-delay:</span>
-                            <input
-                                type="range"
-                                min="0"
-                                max="0.2"
-                                step="0.001"
-                                bind:value={reverbPreDelay}
-                                on:input={handleReverbPreDelayChange}
-                                class="horizontal-slider"
-                            />
-                            <span class="control-value">{(reverbPreDelay * 1000).toFixed(0)}ms</span>
-                        </div>
-                    {/if}
-                </div>
-            </div>
-        </div>
+      <!-- EQ Sliders -->
+      <div class="eq-grid">
+        {#each bands as band, i}
+          <div class="eq-item">
+            <label>{band.frequency}Hz</label>
+            <input
+              type="range"
+              min="-20"
+              max="20"
+              step="0.1"
+              bind:value={eqGains[i]}
+              on:input={(e) => handleEqSliderChange(i, e)}
+              class="horizontal-slider"
+            />
+            <span>{eqGains[i].toFixed(1)}dB</span>
+          </div>
+        {/each}
+      </div>
     </div>
+
+    <!-- Reverb Section -->
+    <div class="card collapsible">
+      <div class="card-header" on:click={() => reverbEnabled = !reverbEnabled}>
+        <span class="card-header-label">
+          <Sliders size={18} /> Reverb
+        </span>
+        <input type="checkbox" bind:checked={reverbEnabled} on:change={handleReverbToggle} />
+      </div>
+      {#if reverbEnabled}
+        <div class="card-body">
+          <!-- IR Reverb -->
+          <div class="reverb-subheader">
+            <span class="reverb-label">Impulse Response</span>
+            <input type="checkbox" id="convolver-enable" bind:checked={convolverEnabled} on:change={handleConvolverToggle} disabled={!impulseResponseBuffer} />
+          </div>
+          <div class="custom-dropdown-wrapper" id="ir-custom-dropdown">
+            <button class="dropdown-toggle" on:click|stopPropagation={toggleIrDropdown} aria-expanded={irDropdownOpen}>
+              {selectedIrUrl ? getFilenameFromUrl(selectedIrUrl) : 'Custom IR'} <span class="arrow">▼</span>
+            </button>
+            {#if irDropdownOpen}
+              <ul class="dropdown-menu" role="menu">
+                {#if !availableIrs.length}
+                  <li class="dropdown-item disabled" role="presentation">No IRs available</li>
+                {:else}
+                  <li role="presentation">
+                    <button class="dropdown-item" class:selected={!selectedIrUrl} on:click={() => handleSelectIr(null)} role="menuitem">
+                      Custom IR
+                    </button>
+                  </li>
+                  {#each availableIrs as irUrl (irUrl)}
+                    <li role="presentation">
+                      <button class="dropdown-item" class:selected={irUrl === selectedIrUrl} on:click={() => handleSelectIr(irUrl)} role="menuitem">
+                        {getFilenameFromUrl(irUrl)}
+                      </button>
+                    </li>
+                  {/each}
+                {/if}
+              </ul>
+            {/if}
+          </div>
+
+          {#if convolverEnabled}
+            <div class="slider-control">
+              <span>Mix:</span>
+              <input type="range" min="0" max="1" step="0.01" bind:value={convolverMix} on:input={handleConvolverMixChange} class="horizontal-slider" />
+              <span>{(convolverMix*100).toFixed(0)}%</span>
+            </div>
+          {/if}
+          
+          {#if !impulseResponseBuffer && selectedIrUrl}
+            <p class="status-message loading">Loading...</p>
+          {:else if !selectedIrUrl}
+            <p class="status-message info">No IR selected</p>
+          {/if}
+
+          <!-- Standard Reverb Type Dropdown -->
+          <div class="reverb-subheader" style="margin-top: 15px;">
+            <span class="reverb-label">Standard Reverb</span>
+          </div>
+          <div class="custom-dropdown-wrapper" id="reverb-type-dropdown">
+            <button class="dropdown-toggle" on:click|stopPropagation={toggleReverbTypeDropdown} aria-expanded={reverbTypeDropdownOpen}>
+              {reverbTypes.find(r => r.value === reverbType)?.label || 'Custom'} <span class="arrow">▼</span>
+            </button>
+            {#if reverbTypeDropdownOpen}
+              <ul class="dropdown-menu" role="menu">
+                {#each reverbTypes as type (type.value)}
+                  <li role="presentation">
+                    <button
+                      class="dropdown-item"
+                      class:selected={type.value === reverbType}
+                      on:click={() => handleSelectReverbType(type.value)}
+                      role="menuitem"
+                    >
+                      {type.label}
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+
+          <!-- Standard Reverb Sliders -->
+          <div class="slider-control">
+            <span>Mix:</span>
+            <input type="range" min="0" max="1" step="0.01" bind:value={reverbMix} on:input={handleReverbMixChange} class="horizontal-slider"/>
+            <span>{(reverbMix*100).toFixed(0)}%</span>
+          </div>
+          <div class="slider-control">
+            <span>Decay:</span>
+            <input type="range" min="0" max="0.95" step="0.01" bind:value={reverbDecay} on:input={handleReverbDecayChange} class="horizontal-slider"/>
+            <span>{(reverbDecay*100).toFixed(0)}%</span>
+          </div>
+          <div class="slider-control">
+            <span>Damping:</span>
+            <input type="range" min="500" max="15000" step="100" bind:value={reverbDamping} on:input={handleReverbDampingChange} class="horizontal-slider"/>
+            <span>{reverbDamping.toFixed(0)}Hz</span>
+          </div>
+          <div class="slider-control">
+            <span>Pre-delay:</span>
+            <input type="range" min="0" max="0.2" step="0.001" bind:value={reverbPreDelay} on:input={handleReverbPreDelayChange} class="horizontal-slider"/>
+            <span>{(reverbPreDelay*1000).toFixed(0)}ms</span>
+          </div>
+          <div class="slider-control">
+            <span>Mod Rate:</span>
+            <input type="range" min="0" max="10" step="0.1" bind:value={reverbModulationRate} on:input={handleReverbModRateChange} class="horizontal-slider"/>
+            <span>{reverbModulationRate.toFixed(1)}Hz</span>
+          </div>
+          <div class="slider-control">
+            <span>Mod Depth:</span>
+            <input type="range" min="0" max="0.005" step="0.0001" bind:value={reverbModulationDepth} on:input={handleReverbModDepthChange} class="horizontal-slider"/>
+            <span>{(reverbModulationDepth * 1000).toFixed(1)}ms</span>
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <!-- Compressor Section -->
+    <div class="card collapsible">
+      <div class="card-header" on:click={() => compressorEnabled = !compressorEnabled}>
+        <span class="card-header-label">
+          <Zap size={18} /> Compressor
+        </span>
+        <input type="checkbox" bind:checked={compressorEnabled} on:change={handleCompressorToggle} />
+      </div>
+      {#if compressorEnabled}
+        <div class="card-body">
+          <div class="slider-control">
+            <span>Threshold:</span>
+            <input type="range" min="-60" max="0" step="1" bind:value={compressorThreshold} on:input={handleCompressorThresholdChange} class="horizontal-slider"/>
+            <span>{compressorThreshold.toFixed(0)}dB</span>
+          </div>
+          <div class="slider-control">
+            <span>Knee:</span>
+            <input type="range" min="0" max="40" step="1" bind:value={compressorKnee} on:input={handleCompressorKneeChange} class="horizontal-slider"/>
+            <span>{compressorKnee.toFixed(0)}dB</span>
+          </div>
+          <div class="slider-control">
+            <span>Ratio:</span>
+            <input type="range" min="1" max="20" step="0.1" bind:value={compressorRatio} on:input={handleCompressorRatioChange} class="horizontal-slider"/>
+            <span>{compressorRatio.toFixed(1)}:1</span>
+          </div>
+          <div class="slider-control">
+            <span>Attack:</span>
+            <input type="range" min="0" max="1" step="0.001" bind:value={compressorAttack} on:input={handleCompressorAttackChange} class="horizontal-slider"/>
+            <span>{(compressorAttack*1000).toFixed(0)}ms</span>
+          </div>
+          <div class="slider-control">
+            <span>Release:</span>
+            <input type="range" min="0" max="1" step="0.001" bind:value={compressorRelease} on:input={handleCompressorReleaseChange} class="horizontal-slider"/>
+            <span>{(compressorRelease*1000).toFixed(0)}ms</span>
+          </div>
+        </div>
+      {/if}
+    </div>
+  </div>
 </div>
 
 <style>
@@ -443,31 +502,55 @@
     .title {
         margin: 0 0 12px 0;
         text-align: center;
-        font-size: 1.5em;
+        font-size: 1.2em; /* Made smaller for desktop */
         color: #1DB954;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px; /* Space between icon and text */
+        font-weight: 600; /* Keep it bold as a header */
     }
 
-    .section-title {
-        margin: 0 0 10px 0;
-        text-align: center;
-        color: #1DB954;
-        font-size: 1em;
-        font-weight: 600;
+    /* Card styles */
+    .card {
+      background-color: #1e1e1e;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      box-shadow: 0 3px 6px rgba(0,0,0,0.3);
+      overflow: hidden;
     }
 
-    /* EQ Section */
-    .eq-section {
-        background-color: #282828;
-        padding: 12px 15px;
-        border-radius: 6px;
-        margin-bottom: 12px;
-        box-shadow: inset 0 1px 3px rgba(0,0,0,0.4);
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 12px;
+      background-color: #282828;
+      cursor: pointer;
+      font-weight: 600;
+      color: #1DB954;
+      font-size: 0.85em; /* Made smaller for desktop */
     }
 
+    .card-header .card-header-label {
+        display: flex;
+        align-items: center;
+        gap: 6px; /* Space between icon and text in card headers */
+    }
+
+    .card-body {
+      padding: 12px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* EQ Grid (inside EQ card) */
     .eq-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
         gap: 12px;
+        padding: 12px 12px 0; /* Add padding to match card-body, but no bottom for separation */
     }
 
     .eq-item {
@@ -480,15 +563,15 @@
     }
 
     .eq-item label {
-        font-size: 0.75em;
+        font-size: 0.7em; /* Slightly smaller for desktop */
         color: #b3b3b3;
         text-align: left;
         flex-shrink: 0;
         min-width: 45px;
     }
 
-    .gain-value {
-        font-size: 0.7em;
+    .eq-item span { /* Updated from .gain-value */
+        font-size: 0.65em; /* Slightly smaller for desktop */
         color: #1DB954;
         min-width: 40px;
         text-align: right;
@@ -496,35 +579,17 @@
         flex-shrink: 0;
     }
 
-    /* Reverb Section */
-    .reverb-section {
-        background-color: #282828;
-        padding: 12px 15px;
-        border-radius: 6px;
-        box-shadow: inset 0 1px 3px rgba(0,0,0,0.4);
-    }
-
-    .reverb-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-        gap: 15px;
-    }
-
-    .reverb-item {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-    }
-
-    .reverb-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 4px 0;
+    /* Reverb Sub-header for Impulse Response / Standard Reverb distinction */
+    .reverb-subheader {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+      margin-top: 5px;
     }
 
     .reverb-label {
-        font-size: 0.85em;
+        font-size: 0.8em; /* Slightly smaller for desktop */
         color: #b3b3b3;
         font-weight: 500;
     }
@@ -554,7 +619,7 @@
         border: 1px solid #555;
         background-color: #333;
         color: #fff;
-        font-size: 0.85em;
+        font-size: 0.8em; /* Slightly smaller for desktop */
         cursor: pointer;
         text-align: left;
         display: flex;
@@ -595,7 +660,7 @@
     .dropdown-item {
         padding: 8px 10px;
         color: #fff;
-        font-size: 0.85em;
+        font-size: 0.8em; /* Slightly smaller for desktop */
         cursor: pointer;
         transition: background-color 0.2s ease;
     }
@@ -616,23 +681,23 @@
         background-color: #2f2f2f;
     }
 
-    /* Slider Control (used for reverb, and now also EQ sliders) */
+    /* Slider Control */
     .slider-control {
         display: flex;
         align-items: center;
         gap: 8px;
     }
 
-    .control-label {
-        font-size: 0.8em;
+    .slider-control span:first-child { /* Targets the label span */
+        font-size: 0.75em; /* Slightly smaller for desktop */
         color: #b3b3b3;
-        min-width: 55px;
+        min-width: 55px; /* Adjust as needed */
     }
 
-    .control-value {
-        font-size: 0.75em;
+    .slider-control span:last-child { /* Targets the value span */
+        font-size: 0.7em; /* Slightly smaller for desktop */
         color: #1DB954;
-        min-width: 35px;
+        min-width: 35px; /* Adjust as needed */
         text-align: right;
         font-weight: 600;
     }
@@ -681,7 +746,7 @@
     /* Status Messages */
     .status-message {
         text-align: center;
-        font-size: 0.7em;
+        font-size: 0.65em; /* Slightly smaller for desktop */
         margin: 5px 0 0 0;
     }
 
@@ -695,12 +760,100 @@
 
     /* Responsive Design */
     @media (max-width: 768px) {
-        .eq-grid {
-            grid-template-columns: 1fr;
+        .eq-scroll-wrapper {
+            position: fixed; /* Keep fixed to position relative to the viewport */
+            top: 20px; /* Small margin from the top of the viewport */
+            left: 50%;
+            transform: translateX(-50%); /* Horizontally center the modal */
+            width: calc(100vw - 20px); /* Take up almost full width with 10px margin on each side */
+            bottom: 80px; /* Adjust this value based on your player's actual height to prevent blocking it */
+            height: auto; /* Let top and bottom properties define the height */
+            max-width: none; /* Allow it to take full available width */
+            max-height: none; /* Allow it to take full available height (defined by top/bottom) */
+            padding-right: 10px; /* Keep space for scrollbar to prevent overlaying content */
+            z-index: 1000; /* Ensure it appears above other content */
+            border: 1px solid #333; /* Optional: subtle border for modal */
+            border-radius: 8px; /* Match the inner component radius */
+            background-color: #1a1a1a; /* Match the inner component background */
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5); /* Stronger shadow for modal */
         }
 
-        .reverb-grid {
+        .eq-controls {
+            /* On mobile, the wrapper is the modal, so the controls should fill it */
+            width: 100%;
+            padding: 15px 0; /* Adjust padding as the wrapper now has padding */
+            background-color: transparent; /* Remove background as wrapper has it now */
+            box-shadow: none; /* Remove shadow as wrapper has it now */
+        }
+
+        /* Adjustments for the title to be within the modal's internal padding */
+        .title {
+            padding: 0 15px; /* Add horizontal padding to title */
+            font-size: 1.1em; /* Smaller title for mobile */
+        }
+
+        /* Adjustments for card content padding to match the new .eq-controls padding */
+        .card-header {
+            padding-left: 15px;
+            padding-right: 15px;
+            font-size: 0.85em; /* Smaller card header text for mobile */
+        }
+        .card-body {
+            padding-left: 15px;
+            padding-right: 15px;
+        }
+
+        .eq-grid {
             grid-template-columns: 1fr;
+            padding-left: 15px; /* Adjust padding */
+            padding-right: 15px; /* Adjust padding */
+        }
+
+        .eq-item label {
+            font-size: 0.7em; /* Smaller EQ band label */
+            min-width: 40px;
+        }
+        .eq-item span { /* Gain value */
+            font-size: 0.65em; /* Smaller EQ gain value */
+            min-width: 35px;
+        }
+
+        .custom-dropdown-wrapper {
+            padding: 0 15px;
+        }
+
+        .dropdown-toggle {
+            font-size: 0.8em; /* Smaller dropdown toggle text */
+            padding: 7px 9px;
+        }
+        .dropdown-menu button.dropdown-item {
+            font-size: 0.8em; /* Smaller dropdown item text */
+            padding: 7px 9px;
+        }
+
+        .slider-control {
+            padding: 0 15px;
+        }
+        .slider-control span:first-child { /* Slider label */
+            font-size: 0.75em; /* Smaller slider label text */
+            min-width: 50px;
+        }
+        .slider-control span:last-child { /* Slider value */
+            font-size: 0.7em; /* Smaller slider value text */
+            min-width: 30px;
+        }
+
+        .reverb-subheader {
+            padding-left: 15px;
+            padding-right: 15px;
+        }
+        .reverb-label {
+            font-size: 0.8em; /* Smaller reverb subheader label */
+        }
+
+        .status-message {
+             padding: 0 15px;
+             font-size: 0.65em; /* Smaller status messages */
         }
     }
 
@@ -714,7 +867,7 @@
         width: 100%;
         display: block;
         cursor: pointer;
-        font-size: 0.85em;
+        font-size: 0.8em; /* Adjusted for consistency, slightly smaller than prev 0.85em */
     }
 
     .dropdown-menu button.dropdown-item:hover {

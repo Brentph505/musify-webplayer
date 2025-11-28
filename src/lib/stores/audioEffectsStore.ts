@@ -1,7 +1,10 @@
 import { writable, get } from 'svelte/store';
 
-// Define initial EQ band parameters
-const initialEqBands = [
+// ---------------------------
+// Constants & Initial Values
+// ---------------------------
+
+export const initialEqBands = [
     { frequency: 60, type: 'lowshelf', q: 0.7, gain: 0 },
     { frequency: 170, type: 'peaking', q: 1.0, gain: 0 },
     { frequency: 350, type: 'peaking', q: 1.0, gain: 0 },
@@ -10,17 +13,22 @@ const initialEqBands = [
     { frequency: 8000, type: 'highshelf', q: 0.7, gain: 0 }
 ] as const;
 
-// Define default custom generic reverb settings
-const defaultGenericReverbCustomSettings = {
+export const defaultGenericReverbCustomSettings = {
     decay: 0.6,
     damping: 6000,
     preDelay: 0.02,
-    mix: 0.2
+    mix: 0.2,
+    modulationRate: 2.5,
+    modulationDepth: 0.001
 };
 
-// Define the shape of the audio effects state
+const AUDIO_SETTINGS_LOCAL_STORAGE_KEY = 'musify-audio-settings';
+
+// ---------------------------
+// Types
+// ---------------------------
+
 export type AudioEffectsState = {
-    // UI-controlled effect parameters
     eqGains: number[];
     convolverEnabled: boolean;
     convolverMix: number;
@@ -34,8 +42,16 @@ export type AudioEffectsState = {
     genericReverbPreDelay: number;
     genericReverbType: string;
     genericReverbCustomSettings: typeof defaultGenericReverbCustomSettings;
+    genericReverbModulationRate: number;
+    genericReverbModulationDepth: number;
+    compressorEnabled: boolean;
+    compressorThreshold: number;
+    compressorKnee: number;
+    compressorRatio: number;
+    compressorAttack: number;
+    compressorRelease: number;
 
-    // Web Audio API Nodes (managed internally, exposed for Eq.svelte props)
+    // Web Audio Nodes
     audioContext: AudioContext | null;
     sourceNode: MediaElementAudioSourceNode | null;
     masterGainNode: GainNode | null;
@@ -43,16 +59,22 @@ export type AudioEffectsState = {
     convolverNode: ConvolverNode | null;
     convolverDryGainNode: GainNode | null;
     convolverWetGainNode: GainNode | null;
-    convolverBoostGainNode: GainNode | null; // NEW: Gain node for convolver boost
+    convolverBoostGainNode: GainNode | null;
     genericReverbPreDelayNode: DelayNode | null;
     genericReverbOutputGain: GainNode | null;
     combFilters: { delay: DelayNode; feedback: GainNode; filter: BiquadFilterNode }[];
     allPassFilters: BiquadFilterNode[];
+    reverbLFOs: OscillatorNode[];
+    reverbModGains: GainNode[];
     combMergerNode: GainNode | null;
     analyserNode: AnalyserNode | null;
+    compressorNode: DynamicsCompressorNode | null;
 };
 
-// Initial state for the store
+// ---------------------------
+// Initial State
+// ---------------------------
+
 const initialAudioEffectsState: AudioEffectsState = {
     eqGains: initialEqBands.map(b => b.gain),
     convolverEnabled: false,
@@ -67,8 +89,15 @@ const initialAudioEffectsState: AudioEffectsState = {
     genericReverbPreDelay: 0.02,
     genericReverbType: 'hall',
     genericReverbCustomSettings: { ...defaultGenericReverbCustomSettings },
+    genericReverbModulationRate: 2.5,
+    genericReverbModulationDepth: 0.001,
+    compressorEnabled: false,
+    compressorThreshold: -24,
+    compressorKnee: 30,
+    compressorRatio: 12,
+    compressorAttack: 0.003,
+    compressorRelease: 0.25,
 
-    // Audio API nodes are initially null and get set during `init`
     audioContext: null,
     sourceNode: null,
     masterGainNode: null,
@@ -76,26 +105,144 @@ const initialAudioEffectsState: AudioEffectsState = {
     convolverNode: null,
     convolverDryGainNode: null,
     convolverWetGainNode: null,
-    convolverBoostGainNode: null, // NEW: Initialize as null
+    convolverBoostGainNode: null,
     genericReverbPreDelayNode: null,
     genericReverbOutputGain: null,
     combFilters: [],
     allPassFilters: [],
+    reverbLFOs: [],
+    reverbModGains: [],
     combMergerNode: null,
     analyserNode: null,
+    compressorNode: null
 };
 
-const AUDIO_SETTINGS_LOCAL_STORAGE_KEY = 'musify-audio-settings';
-
-// Create the writable store
 const store = writable<AudioEffectsState>(initialAudioEffectsState);
 
-// Helper to get current state outside of a store.update call
-function getCurrentState(): AudioEffectsState {
-    return get(store);
-}
+// ---------------------------
+// Helper Functions
+// ---------------------------
 
+const getCurrentState = () => get(store);
+
+const saveToLocalStorage = (state: AudioEffectsState) => {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    const settingsToSave = {
+        eqGains: state.eqGains,
+        convolverEnabled: state.convolverEnabled,
+        convolverMix: state.convolverMix,
+        selectedIrUrl: state.selectedIrUrl,
+        genericReverbEnabled: state.genericReverbEnabled,
+        genericReverbMix: state.genericReverbMix,
+        genericReverbDecay: state.genericReverbDecay,
+        genericReverbDamping: state.genericReverbDamping,
+        genericReverbPreDelay: state.genericReverbPreDelay,
+        genericReverbType: state.genericReverbType,
+        genericReverbCustomSettings: state.genericReverbCustomSettings,
+        genericReverbModulationRate: state.genericReverbModulationRate,
+        genericReverbModulationDepth: state.genericReverbModulationDepth,
+        compressorEnabled: state.compressorEnabled,
+        compressorThreshold: state.compressorThreshold,
+        compressorKnee: state.compressorKnee,
+        compressorRatio: state.compressorRatio,
+        compressorAttack: state.compressorAttack,
+        compressorRelease: state.compressorRelease
+    };
+    localStorage.setItem(AUDIO_SETTINGS_LOCAL_STORAGE_KEY, JSON.stringify(settingsToSave));
+    console.log('AudioEffectsStore: Saved audio settings to localStorage.');
+};
+
+const applyEq = (state: AudioEffectsState) => {
+    if (!state.filterNodes.length) return;
+    state.filterNodes.forEach((filter, i) => {
+        filter.gain.value = state.eqGains[i];
+    });
+};
+
+const updateConvolver = (state: AudioEffectsState) => {
+    const { convolverEnabled, impulseResponseBuffer, convolverNode, convolverDryGainNode, convolverWetGainNode, convolverBoostGainNode, convolverMix } = state;
+    if (!convolverNode || !convolverDryGainNode || !convolverWetGainNode || !convolverBoostGainNode) {
+        console.warn('AudioEffectsStore: Convolver nodes not ready for update.');
+        return;
+    }
+
+    const MAX_CONVOLVER_BOOST_DB = 9;
+    const MIN_MIX_FOR_BOOST = 0.2;
+
+    if (convolverEnabled && impulseResponseBuffer && convolverNode.buffer) {
+        convolverWetGainNode.gain.value = convolverMix;
+        convolverDryGainNode.gain.value = 1 - convolverMix;
+
+        if (convolverMix >= MIN_MIX_FOR_BOOST) {
+            const normalizedMix = (convolverMix - MIN_MIX_FOR_BOOST) / (1.0 - MIN_MIX_FOR_BOOST);
+            const boostDb = normalizedMix * MAX_CONVOLVER_BOOST_DB;
+            convolverBoostGainNode.gain.value = Math.pow(10, boostDb / 20);
+        } else {
+            convolverBoostGainNode.gain.value = 1;
+        }
+    } else {
+        convolverWetGainNode.gain.value = 0;
+        convolverDryGainNode.gain.value = 1;
+        convolverBoostGainNode.gain.value = 1;
+    }
+};
+
+const updateGenericReverb = (state: AudioEffectsState) => {
+    const { genericReverbEnabled, genericReverbPreDelayNode, genericReverbOutputGain, combFilters, reverbLFOs, reverbModGains } = state;
+    if (!genericReverbPreDelayNode || !genericReverbOutputGain || !combFilters.length || !reverbLFOs.length || !reverbModGains.length) {
+        console.warn('AudioEffectsStore: Generic reverb nodes not ready for update.');
+        return;
+    }
+
+    if (genericReverbEnabled) {
+        genericReverbPreDelayNode.delayTime.value = state.genericReverbPreDelay;
+        genericReverbOutputGain.gain.value = state.genericReverbMix;
+
+        const lfoBaseFrequencies = [2.1, 2.3, 1.9, 2.5]; // Must match LFOs created in init
+        combFilters.forEach((comb, i) => {
+            comb.feedback.gain.value = state.genericReverbDecay;
+            comb.filter.frequency.value = state.genericReverbDamping;
+            // Update modulation from state
+            reverbLFOs[i].frequency.value = lfoBaseFrequencies[i] * (state.genericReverbModulationRate / 2.5);
+            reverbModGains[i].gain.value = state.genericReverbModulationDepth;
+        });
+    } else {
+        genericReverbOutputGain.gain.value = 0; // Disable generic reverb output
+        // Kill the feedback loops immediately to stop reverb tail
+        combFilters.forEach(comb => {
+            comb.feedback.gain.value = 0;
+            // Kill modulation when reverb is off to save resources
+            reverbModGains.forEach(g => g.gain.value = 0);
+        });
+    }
+};
+
+const updateCompressor = (state: AudioEffectsState) => {
+    const { compressorNode, compressorEnabled, compressorThreshold, compressorKnee, compressorRatio, compressorAttack, compressorRelease } = state;
+    if (!compressorNode) {
+        console.warn('AudioEffectsStore: Compressor node not ready for update.');
+        return;
+    }
+
+    if (compressorEnabled) {
+        compressorNode.threshold.value = compressorThreshold;
+        compressorNode.knee.value = compressorKnee;
+        compressorNode.ratio.value = compressorRatio;
+        compressorNode.attack.value = compressorAttack;
+        compressorNode.release.value = compressorRelease;
+    } else {
+        // Effectively bypass the compressor
+        compressorNode.threshold.value = 0;
+        compressorNode.ratio.value = 1;
+        compressorNode.attack.value = 0;
+        compressorNode.release.value = 0;
+        compressorNode.knee.value = 0;
+    }
+};
+
+// ---------------------------
 // Public API for the audio effects store
+// ---------------------------
 export const audioEffectsStore = {
     subscribe: store.subscribe,
     initialEqBands, // Expose initial bands for rendering in Eq.svelte
@@ -108,105 +255,108 @@ export const audioEffectsStore = {
      */
     init: async (audioElement: HTMLAudioElement, initialVolume: number) => {
         const state = getCurrentState();
-
         if (state.audioContext) {
             console.warn('AudioEffectsStore: AudioContext already initialized.');
             return;
         }
 
-        // 1. Initialize AudioContext
-        const newAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        if (newAudioContext.state === 'suspended') {
-            await newAudioContext.resume(); // Resume if suspended (browser policy)
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
         }
-        console.log('AudioEffectsStore: AudioContext initialized. State:', newAudioContext.state);
+        console.log('AudioEffectsStore: AudioContext initialized. State:', audioContext.state);
 
-        // 2. Create Core Nodes
-        const newSourceNode = newAudioContext.createMediaElementSource(audioElement);
-        const newMasterGainNode = newAudioContext.createGain();
-        newMasterGainNode.gain.value = initialVolume;
-        const newAnalyserNode = newAudioContext.createAnalyser();
-        newAnalyserNode.fftSize = 256;
+        const sourceNode = audioContext.createMediaElementSource(audioElement);
+        const masterGainNode = audioContext.createGain();
+        masterGainNode.gain.value = initialVolume;
+        const analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 256;
         console.log('AudioEffectsStore: Core nodes (source, masterGain, analyser) created.');
 
-        // 3. Create EQ Filter Nodes
-        const newFilterNodes = initialEqBands.map((band, i) => {
-            const filter = newAudioContext.createBiquadFilter();
-            filter.type = band.type as BiquadFilterType;
-            filter.frequency.value = band.frequency;
-            filter.Q.value = band.q;
-            filter.gain.value = state.eqGains[i]; // Use loaded gain
-            return filter;
+        const filterNodes = initialEqBands.map((band, i) => {
+            const f = audioContext.createBiquadFilter();
+            f.type = band.type as BiquadFilterType;
+            f.frequency.value = band.frequency;
+            f.Q.value = band.q;
+            f.gain.value = state.eqGains[i];
+            return f;
         });
         console.log('AudioEffectsStore: EQ filter nodes created.');
 
-        // 4. Create ConvolverNode and its Dry/Wet GainNodes
-        const newConvolverNode = newAudioContext.createConvolver();
-        const newConvolverDryGainNode = newAudioContext.createGain();
-        const newConvolverWetGainNode = newAudioContext.createGain();
-        const newConvolverBoostGainNode = newAudioContext.createGain(); // NEW: Convolver Boost Gain Node
-        newConvolverBoostGainNode.gain.value = 1; // Default to no boost
+        const convolverNode = audioContext.createConvolver();
+        const convolverDryGainNode = audioContext.createGain();
+        const convolverWetGainNode = audioContext.createGain();
+        const convolverBoostGainNode = audioContext.createGain();
+        convolverBoostGainNode.gain.value = 1;
         console.log('AudioEffectsStore: Convolver and its Dry/Wet GainNodes created.');
 
-        // 5. Create Generic Reverb Nodes (Freeverb-style architecture)
-        const newGenericReverbPreDelayNode = newAudioContext.createDelay(0.5); // Max 0.5s pre-delay
-        const newGenericReverbOutputGain = newAudioContext.createGain();
-        const newCombMergerNode = newAudioContext.createGain();
-        newCombMergerNode.gain.value = 1 / 4; // Average the 4 comb filter outputs
+        const genericReverbPreDelayNode = audioContext.createDelay(0.5);
+        const genericReverbOutputGain = audioContext.createGain();
+        const combMergerNode = audioContext.createGain();
+        combMergerNode.gain.value = 1 / 4;
 
-        const newCombFilters: typeof state.combFilters = [];
-        const combDelayTimes = [0.0297, 0.0371, 0.0411, 0.0437]; // Prime-based delay times
-        for (const time of combDelayTimes) {
-            const delay = newAudioContext.createDelay(1.0);
+        const combFilters: typeof state.combFilters = [0.0297, 0.0371, 0.0411, 0.0437].map(time => {
+            const delay = audioContext.createDelay(1.0);
             delay.delayTime.value = time;
-            const feedback = newAudioContext.createGain();
-            const filter = newAudioContext.createBiquadFilter();
-            filter.type = 'lowpass'; // Damping filter
-            filter.Q.value = 0.7; // Fixed Q for damping filter
-            newCombFilters.push({ delay, feedback, filter });
+            const feedback = audioContext.createGain();
+            const filter = audioContext.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.Q.value = 0.7;
+            return { delay, feedback, filter };
+        });
+
+        const reverbLFOs: OscillatorNode[] = [];
+        const reverbModGains: GainNode[] = [];
+        const lfoFrequencies = [2.1, 2.3, 1.9, 2.5];
+        for (let i = 0; i < combFilters.length; i++) {
+            const lfo = audioContext.createOscillator();
+            lfo.type = 'sine';
+            lfo.frequency.value = lfoFrequencies[i];
+            lfo.start();
+
+            const modGain = audioContext.createGain();
+            modGain.gain.value = state.genericReverbModulationDepth;
+
+            lfo.connect(modGain);
+            // Connect LFO -> ModGain -> DelayTime AudioParam for modulation
+            modGain.connect(combFilters[i].delay.delayTime);
+
+            reverbLFOs.push(lfo);
+            reverbModGains.push(modGain);
         }
 
-        const newAllPassFilters: BiquadFilterNode[] = [];
-        const allPassFrequencies = [225, 556]; // Frequencies for all-pass diffusers
-        for (const freq of allPassFrequencies) {
-            const allpass = newAudioContext.createBiquadFilter();
-            allpass.type = 'allpass';
-            allpass.frequency.value = freq;
-            newAllPassFilters.push(allpass);
-        }
-        console.log('AudioEffectsStore: Generic Reverb (Freeverb-style) nodes created.');
+        const allPassFilters: BiquadFilterNode[] = [225, 556, 441, 341].map(freq => {
+            const ap = audioContext.createBiquadFilter();
+            ap.type = 'allpass';
+            ap.frequency.value = freq;
+            return ap;
+        });
+        console.log('AudioEffectsStore: Generic Reverb (Freeverb-style with modulation) nodes created.');
 
-        // 6. Update the store with all new nodes and context
-        store.update(s => ({
-            ...s,
-            audioContext: newAudioContext,
-            sourceNode: newSourceNode,
-            masterGainNode: newMasterGainNode,
-            analyserNode: newAnalyserNode,
-            filterNodes: newFilterNodes,
-            convolverNode: newConvolverNode,
-            convolverDryGainNode: newConvolverDryGainNode,
-            convolverWetGainNode: newConvolverWetGainNode,
-            convolverBoostGainNode: newConvolverBoostGainNode, // NEW: Add to store
-            genericReverbPreDelayNode: newGenericReverbPreDelayNode,
-            genericReverbOutputGain: newGenericReverbOutputGain,
-            combMergerNode: newCombMergerNode,
-            combFilters: newCombFilters,
-            allPassFilters: newAllPassFilters,
-        }));
+        const compressorNode = audioContext.createDynamicsCompressor();
+        compressorNode.threshold.value = state.compressorThreshold;
+        compressorNode.knee.value = state.compressorKnee;
+        compressorNode.ratio.value = state.compressorRatio;
+        compressorNode.attack.value = state.compressorAttack;
+        compressorNode.release.value = state.compressorRelease;
+        console.log('AudioEffectsStore: DynamicsCompressorNode created.');
 
-        // 7. Establish the Audio Graph Connections (once permanently)
+        store.set({
+            ...state,
+            audioContext, sourceNode, masterGainNode, analyserNode, filterNodes,
+            convolverNode, convolverDryGainNode, convolverWetGainNode, convolverBoostGainNode,
+            genericReverbPreDelayNode, genericReverbOutputGain, combMergerNode,
+            combFilters, allPassFilters, reverbLFOs, reverbModGains, compressorNode
+        });
+        console.log('AudioEffectsStore: Store updated with new audio nodes.');
+
         audioEffectsStore.setupAudioGraph();
         console.log('AudioEffectsStore: Audio graph connections established.');
 
-        // 8. Fetch available IRs and apply loaded settings
         await audioEffectsStore.fetchAvailableIrs();
-        // After IRs are fetched and selectedIrUrl potentially updated, load the IR
         await audioEffectsStore.loadImpulseResponse(getCurrentState().selectedIrUrl);
-        // Configure generic reverb (this also applies settings to nodes)
         audioEffectsStore.configureGenericReverb(getCurrentState().genericReverbType);
-        audioEffectsStore.updateAllEffects(); // Final update to set all gains/states
-
+        audioEffectsStore.updateAllEffects(); // Final update to set all gains/states based on loaded settings
         console.log('AudioEffectsStore: Initialization complete.');
     },
 
@@ -220,6 +370,13 @@ export const audioEffectsStore = {
                 console.log('AudioEffectsStore: AudioContext closed.');
             }).catch(e => console.error('AudioEffectsStore: Error closing AudioContext:', e));
         }
+        state.reverbLFOs.forEach(lfo => {
+            try {
+                lfo.stop();
+            } catch (e) {
+                console.warn('AudioEffectsStore: Error stopping LFO, might already be stopped:', e);
+            }
+        });
         store.set(initialAudioEffectsState); // Reset to initial state
         console.log('AudioEffectsStore: Store reset.');
     },
@@ -229,38 +386,38 @@ export const audioEffectsStore = {
      * This method is only called once during initialization.
      */
     setupAudioGraph: () => {
-        const state = getCurrentState();
-        const { sourceNode, filterNodes, convolverNode, convolverDryGainNode, convolverWetGainNode,
-                convolverBoostGainNode, // NEW: Destructure boost node
-                genericReverbPreDelayNode, genericReverbOutputGain, combFilters, allPassFilters, combMergerNode,
-                analyserNode, masterGainNode, audioContext } = state;
+        const s = getCurrentState();
 
-        // Basic validation that required nodes exist
-        if (!audioContext || !sourceNode || !masterGainNode || !analyserNode || !convolverNode || !genericReverbPreDelayNode ||
-            !convolverDryGainNode || !convolverWetGainNode || !genericReverbOutputGain || !combMergerNode || !combFilters.length || !allPassFilters.length || !convolverBoostGainNode) { // NEW: Validate boost node
+        if (!s.audioContext || !s.sourceNode || !s.masterGainNode || !s.analyserNode ||
+            !s.convolverNode || !s.genericReverbPreDelayNode || !s.convolverDryGainNode ||
+            !s.convolverWetGainNode || !s.genericReverbOutputGain || !s.combMergerNode ||
+            !s.combFilters.length || !s.allPassFilters.length || !s.convolverBoostGainNode ||
+            !s.reverbLFOs.length || !s.reverbModGains.length || !s.compressorNode) {
             console.error('AudioEffectsStore: Cannot setup audio graph, some required nodes are null/missing.');
             return;
         }
 
         // 1. Source -> EQ Chain
-        let currentAudioNode: AudioNode = sourceNode;
-        if (filterNodes.length > 0) {
-            currentAudioNode.connect(filterNodes[0]);
-            for (let i = 0; i < filterNodes.length - 1; i++) {
-                filterNodes[i].connect(filterNodes[i+1]);
+        let current: AudioNode = s.sourceNode;
+        if (s.filterNodes.length > 0) {
+            current.connect(s.filterNodes[0]);
+            for (let i = 0; i < s.filterNodes.length - 1; i++) {
+                s.filterNodes[i].connect(s.filterNodes[i + 1]);
             }
-            currentAudioNode = filterNodes[filterNodes.length - 1]; // Output of EQ chain
+            current = s.filterNodes[s.filterNodes.length - 1]; // Output of EQ chain
         }
 
         // 2. EQ Chain Output -> Split into multiple paths (Convolver dry/wet, Generic Reverb)
-        currentAudioNode.connect(convolverDryGainNode);   // Dry path for convolver mix
-        currentAudioNode.connect(convolverNode);          // Wet path for convolver
-        currentAudioNode.connect(genericReverbPreDelayNode); // Input for generic reverb starts with pre-delay
+        current.connect(s.convolverDryGainNode);   // Dry path for convolver mix
+        current.connect(s.convolverNode);          // Wet path for convolver
+        current.connect(s.genericReverbPreDelayNode); // Input for generic reverb starts with pre-delay
 
         // 3. Set up Generic Reverb Routing
-        genericReverbPreDelayNode.connect(combMergerNode); // Connect to comb merger directly for early reflections
-        for (const comb of combFilters) {
-            genericReverbPreDelayNode.connect(comb.delay); // Main signal into each comb's delay
+        s.genericReverbPreDelayNode.connect(s.combMergerNode); // Connect to comb merger directly for early reflections
+        for (let i = 0; i < s.combFilters.length; i++) {
+            const comb = s.combFilters[i];
+            // The LFO -> ModGain -> DelayTime connection is established in init, permanent.
+            s.genericReverbPreDelayNode.connect(comb.delay); // Main signal into each comb's delay
 
             // Setup feedback loop for each comb filter: Delay -> Feedback Gain -> Damping Filter -> Delay
             comb.delay.connect(comb.feedback);
@@ -268,22 +425,37 @@ export const audioEffectsStore = {
             comb.filter.connect(comb.delay);
 
             // Connect comb output to the merger
-            comb.delay.connect(combMergerNode);
+            comb.delay.connect(s.combMergerNode);
         }
         // Comb Merger -> Series All-Pass Filters -> Output Gain
-        combMergerNode.connect(allPassFilters[0]);
-        allPassFilters[0].connect(allPassFilters[1]); // Assuming 2 all-pass filters
-        allPassFilters[1].connect(genericReverbOutputGain); // Final generic reverb output
+        s.combMergerNode.connect(s.allPassFilters[0]);
+        for (let i = 0; i < s.allPassFilters.length - 1; i++) {
+            s.allPassFilters[i].connect(s.allPassFilters[i + 1]);
+        }
+        s.allPassFilters[s.allPassFilters.length - 1].connect(s.genericReverbOutputGain); // Final generic reverb output
 
-        // 4. All Effect Paths -> Analyser -> Convolver Boost -> Master Gain -> Destination
-        convolverDryGainNode.connect(analyserNode);      // Convolver dry path
-        convolverNode.connect(convolverWetGainNode);    // Convolver feeds its wet gain
-        convolverWetGainNode.connect(analyserNode);     // Convolver wet path
-        genericReverbOutputGain.connect(analyserNode);  // Generic reverb path
+        // 4. All Effect Paths -> Compressor -> Analyser -> Convolver Boost -> Master Gain -> Destination
+        s.convolverDryGainNode.connect(s.compressorNode);
+        s.convolverNode.connect(s.convolverWetGainNode);
+        s.convolverWetGainNode.connect(s.compressorNode);
+        s.genericReverbOutputGain.connect(s.compressorNode);
+        s.compressorNode.connect(s.analyserNode);
+        s.analyserNode.connect(s.convolverBoostGainNode);
+        s.convolverBoostGainNode.connect(s.masterGainNode);
+        s.masterGainNode.connect(s.audioContext.destination);
+    },
 
-        analyserNode.connect(convolverBoostGainNode);   // NEW: Analyser feeds into Convolver Boost
-        convolverBoostGainNode.connect(masterGainNode); // NEW: Convolver Boost feeds into Master Gain
-        masterGainNode.connect(audioContext.destination); // Master volume feeds to speakers
+    /**
+     * Updates all effect connections (dry/wet mixes, enable states) based on current store state.
+     * This is called whenever an enable/disable or mix parameter changes.
+     */
+    updateAllEffects: () => {
+        const state = getCurrentState();
+        applyEq(state);
+        updateConvolver(state);
+        updateGenericReverb(state);
+        updateCompressor(state);
+        saveToLocalStorage(state); // Save settings after all effects are updated
     },
 
     /**
@@ -291,28 +463,21 @@ export const audioEffectsStore = {
      */
     loadSettings: () => {
         if (typeof window === 'undefined' || !window.localStorage) return;
-        const storedSettings = localStorage.getItem(AUDIO_SETTINGS_LOCAL_STORAGE_KEY);
-        if (storedSettings) {
-            try {
-                const settings = JSON.parse(storedSettings);
-                store.update(s => ({
-                    ...s,
-                    eqGains: settings.eqGains || s.eqGains,
-                    convolverEnabled: typeof settings.convolverEnabled === 'boolean' ? settings.convolverEnabled : s.convolverEnabled,
-                    convolverMix: typeof settings.convolverMix === 'number' ? settings.convolverMix : s.convolverMix,
-                    selectedIrUrl: typeof settings.selectedIrUrl === 'string' || settings.selectedIrUrl === null ? settings.selectedIrUrl : s.selectedIrUrl,
-                    genericReverbEnabled: typeof settings.genericReverbEnabled === 'boolean' ? settings.genericReverbEnabled : s.genericReverbEnabled,
-                    genericReverbMix: typeof settings.genericReverbMix === 'number' ? settings.genericReverbMix : s.genericReverbMix,
-                    genericReverbDecay: typeof settings.genericReverbDecay === 'number' ? settings.genericReverbDecay : s.genericReverbDecay,
-                    genericReverbDamping: typeof settings.genericReverbDamping === 'number' ? settings.genericReverbDamping : s.genericReverbDamping,
-                    genericReverbPreDelay: typeof settings.genericReverbPreDelay === 'number' ? settings.genericReverbPreDelay : s.genericReverbPreDelay,
-                    genericReverbType: typeof settings.genericReverbType === 'string' ? settings.genericReverbType : s.genericReverbType,
-                    genericReverbCustomSettings: settings.genericReverbCustomSettings ? { ...defaultGenericReverbCustomSettings, ...settings.genericReverbCustomSettings } : s.genericReverbCustomSettings,
-                }));
-                console.log('AudioEffectsStore: Loaded audio settings from localStorage.');
-            } catch (e) {
-                console.error('AudioEffectsStore: Failed to parse audio settings from localStorage:', e);
-            }
+        const s = localStorage.getItem(AUDIO_SETTINGS_LOCAL_STORAGE_KEY);
+        if (!s) return;
+        try {
+            const settings = JSON.parse(s);
+            store.update(state => ({
+                ...state,
+                ...settings,
+                // Ensure genericReverbCustomSettings is merged properly to maintain defaults
+                genericReverbCustomSettings: settings.genericReverbCustomSettings
+                    ? { ...defaultGenericReverbCustomSettings, ...settings.genericReverbCustomSettings }
+                    : state.genericReverbCustomSettings,
+            }));
+            console.log('AudioEffectsStore: Loaded audio settings from localStorage.');
+        } catch (e) {
+            console.error('AudioEffectsStore: Failed to parse audio settings from localStorage:', e);
         }
     },
 
@@ -320,76 +485,52 @@ export const audioEffectsStore = {
      * Saves current audio effects settings to localStorage.
      */
     saveSettings: () => {
-        if (typeof window === 'undefined' || !window.localStorage) return;
-        const state = getCurrentState();
-        const settingsToSave = {
-            eqGains: state.eqGains,
-            convolverEnabled: state.convolverEnabled,
-            convolverMix: state.convolverMix,
-            selectedIrUrl: state.selectedIrUrl,
-            genericReverbEnabled: state.genericReverbEnabled,
-            genericReverbMix: state.genericReverbMix,
-            genericReverbDecay: state.genericReverbDecay,
-            genericReverbDamping: state.genericReverbDamping,
-            genericReverbPreDelay: state.genericReverbPreDelay,
-            genericReverbType: state.genericReverbType,
-            genericReverbCustomSettings: state.genericReverbCustomSettings,
-        };
-        localStorage.setItem(AUDIO_SETTINGS_LOCAL_STORAGE_KEY, JSON.stringify(settingsToSave));
-        console.log('AudioEffectsStore: Saved audio settings to localStorage.');
+        saveToLocalStorage(getCurrentState());
     },
 
     // --- EQ Management ---
     updateEqGain: (index: number, value: number) => {
         store.update(s => {
             s.eqGains[index] = value;
-            if (s.filterNodes[index]) s.filterNodes[index].gain.value = value;
             return { ...s, eqGains: [...s.eqGains] }; // Trigger reactivity
         });
-        audioEffectsStore.saveSettings();
+        audioEffectsStore.updateAllEffects();
     },
     applyEqPreset: (gains: number[]) => {
         store.update(s => {
-            s.eqGains = [...gains];
-            s.filterNodes.forEach((filter, i) => {
-                if (filter) filter.gain.value = gains[i];
-            });
-            return s;
+            // Ensure the gains array matches the number of EQ bands
+            s.eqGains = gains.slice(0, initialEqBands.length);
+            return { ...s, eqGains: [...s.eqGains] };
         });
-        audioEffectsStore.saveSettings();
+        audioEffectsStore.updateAllEffects();
     },
 
     // --- Convolver (IR Reverb) Management ---
     toggleConvolver: (enabled: boolean) => {
         store.update(s => ({ ...s, convolverEnabled: enabled }));
         audioEffectsStore.updateAllEffects();
-        audioEffectsStore.saveSettings();
     },
     setConvolverMix: (mix: number) => {
         store.update(s => ({ ...s, convolverMix: mix }));
         audioEffectsStore.updateAllEffects();
-        audioEffectsStore.saveSettings();
     },
     selectIr: async (irUrl: string | null) => {
         store.update(s => ({ ...s, selectedIrUrl: irUrl }));
-        await audioEffectsStore.loadImpulseResponse(irUrl); // This will update impulseResponseBuffer
-        audioEffectsStore.saveSettings();
+        await audioEffectsStore.loadImpulseResponse(irUrl); // This will update impulseResponseBuffer and then call updateAllEffects
     },
 
     // --- Generic Reverb Management ---
     toggleGenericReverb: (enabled: boolean) => {
         store.update(s => ({ ...s, genericReverbEnabled: enabled }));
         audioEffectsStore.updateAllEffects();
-        audioEffectsStore.saveSettings();
     },
     setGenericReverbMix: (mix: number) => {
         store.update(s => {
             if (s.genericReverbType !== 'custom') s.genericReverbType = 'custom';
-            s.genericReverbCustomSettings.mix = mix; // Update custom settings
-            return { ...s, genericReverbMix: mix }; // Update current mix value
+            s.genericReverbCustomSettings.mix = mix;
+            return { ...s, genericReverbMix: mix };
         });
         audioEffectsStore.updateAllEffects();
-        audioEffectsStore.saveSettings();
     },
     setGenericReverbDecay: (decay: number) => {
         store.update(s => {
@@ -398,7 +539,6 @@ export const audioEffectsStore = {
             return { ...s, genericReverbDecay: decay };
         });
         audioEffectsStore.updateAllEffects();
-        audioEffectsStore.saveSettings();
     },
     setGenericReverbDamping: (damping: number) => {
         store.update(s => {
@@ -407,7 +547,6 @@ export const audioEffectsStore = {
             return { ...s, genericReverbDamping: damping };
         });
         audioEffectsStore.updateAllEffects();
-        audioEffectsStore.saveSettings();
     },
     setGenericReverbPreDelay: (preDelay: number) => {
         store.update(s => {
@@ -416,12 +555,94 @@ export const audioEffectsStore = {
             return { ...s, genericReverbPreDelay: preDelay };
         });
         audioEffectsStore.updateAllEffects();
-        audioEffectsStore.saveSettings();
+    },
+    setGenericReverbModulationRate: (rate: number) => {
+        store.update(s => {
+            if (s.genericReverbType !== 'custom') s.genericReverbType = 'custom';
+            s.genericReverbCustomSettings.modulationRate = rate;
+            return { ...s, genericReverbModulationRate: rate };
+        });
+        audioEffectsStore.updateAllEffects();
+    },
+    setGenericReverbModulationDepth: (depth: number) => {
+        store.update(s => {
+            if (s.genericReverbType !== 'custom') s.genericReverbType = 'custom';
+            s.genericReverbCustomSettings.modulationDepth = depth;
+            return { ...s, genericReverbModulationDepth: depth };
+        });
+        audioEffectsStore.updateAllEffects();
     },
     setGenericReverbType: (type: string) => {
         store.update(s => ({ ...s, genericReverbType: type }));
-        audioEffectsStore.configureGenericReverb(type); // Apply preset parameters to nodes
-        audioEffectsStore.saveSettings();
+        audioEffectsStore.configureGenericReverb(type); // configureGenericReverb already calls updateAllEffects
+    },
+
+    /**
+     * Configures generic reverb parameters based on a preset type.
+     * Applies the selected preset's values to the generic reverb nodes and store state.
+     * If type is 'custom', it applies the values from genericReverbCustomSettings.
+     * @param type The preset type ('room', 'hall', 'plate', 'custom', etc.).
+     */
+    configureGenericReverb: (type: string) => {
+        store.update(s => {
+            // Define reverb presets
+            const presets: { [key: string]: typeof defaultGenericReverbCustomSettings } = {
+                room: { decay: 0.42, damping: 9000, mix: 0.16, preDelay: 0.008, modulationRate: 0.4, modulationDepth: 0.00008 },
+                hall: { decay: 0.62, damping: 6000, mix: 0.26, preDelay: 0.018, modulationRate: 0.5, modulationDepth: 0.0001 },
+                plate: { decay: 0.72, damping: 11500, mix: 0.20, preDelay: 0.008, modulationRate: 0.6, modulationDepth: 0.00009 },
+                space: { decay: 0.85, damping: 3800, mix: 0.32, preDelay: 0.045, modulationRate: 0.7, modulationDepth: 0.00012 },
+                studio: { decay: 0.52, damping: 7500, mix: 0.14, preDelay: 0.012, modulationRate: 0.3, modulationDepth: 0.00006 },
+                custom: s.genericReverbCustomSettings // Use current custom settings
+            };
+
+            // Get preset, or fallback to 'hall' if type is unrecognized
+            const p = presets[type] || presets.hall;
+            if (!presets[type]) {
+                console.warn(`AudioEffectsStore: Unrecognized generic reverb type "${type}", falling back to "hall".`);
+                type = 'hall';
+            }
+
+            console.log(`AudioEffectsStore: Generic reverb preset set to "${type}".`);
+            return {
+                ...s,
+                genericReverbDecay: p.decay,
+                genericReverbDamping: p.damping,
+                genericReverbMix: p.mix,
+                genericReverbPreDelay: p.preDelay,
+                genericReverbType: type,
+                genericReverbModulationRate: p.modulationRate,
+                genericReverbModulationDepth: p.modulationDepth,
+                // If switching from custom, copy preset values into custom settings as well
+                genericReverbCustomSettings: type === 'custom' ? s.genericReverbCustomSettings : { ...p }
+            };
+        });
+        audioEffectsStore.updateAllEffects(); // Ensure overall state and node parameters are updated
+    },
+
+    // --- Dynamics Compressor Management ---
+    toggleCompressor: (enabled: boolean) => {
+        store.update(s => ({ ...s, compressorEnabled: enabled }));
+        audioEffectsStore.updateAllEffects();
+    },
+    setCompressorThreshold: (threshold: number) => {
+        store.update(s => ({ ...s, compressorThreshold: threshold }));
+        audioEffectsStore.updateAllEffects();
+    },
+    setCompressorKnee: (knee: number) => {
+        store.update(s => ({ ...s, compressorKnee: knee }));
+        audioEffectsStore.updateAllEffects();
+    },
+    setCompressorRatio: (ratio: number) => {
+        store.update(s => ({ ...s, compressorRatio: ratio }));
+        audioEffectsStore.updateAllEffects();
+    },
+    setCompressorAttack: (attack: number) => {
+        store.update(s => ({ ...s, compressorAttack: attack }));
+        audioEffectsStore.updateAllEffects();
+    },
+    setCompressorRelease: (release: number) => {
+        store.update(s => ({ ...s, compressorRelease: release }));
+        audioEffectsStore.updateAllEffects();
     },
 
     /**
@@ -430,9 +651,9 @@ export const audioEffectsStore = {
      * @param volume The new master volume (0-1).
      */
     setMasterVolume: (volume: number) => {
-        const state = getCurrentState();
-        if (state.masterGainNode) {
-            state.masterGainNode.gain.value = volume;
+        const s = getCurrentState();
+        if (s.masterGainNode) {
+            s.masterGainNode.gain.value = volume;
         }
     },
 
@@ -496,153 +717,6 @@ export const audioEffectsStore = {
             audioEffectsStore.updateAllEffects(); // Update connections to reflect error
         }
     },
-
-    /**
-     * Configures generic reverb parameters based on a preset type.
-     * Applies the selected preset's values to the generic reverb nodes.
-     * If type is 'custom', it applies the values from genericReverbCustomSettings.
-     * @param type The preset type ('room', 'hall', 'plate', 'custom', etc.).
-     */
-    configureGenericReverb: (type: string) => {
-        store.update(s => {
-            if (!s.combFilters.length || !s.genericReverbPreDelayNode || !s.genericReverbOutputGain) {
-                console.warn('AudioEffectsStore: Generic reverb nodes not initialized yet for configuration.');
-                return s;
-            }
-
-            let newDecay = s.genericReverbDecay;
-            let newDamping = s.genericReverbDamping;
-            let newMix = s.genericReverbMix;
-            let newPreDelay = s.genericReverbPreDelay;
-
-            switch (type) {
-                case 'room':
-                    newDecay = 0.5;
-                    newDamping = 8000;
-                    newMix = 0.2;
-                    newPreDelay = 0.01;
-                    break;
-                case 'hall':
-                    newDecay = 0.7;
-                    newDamping = 5000;
-                    newMix = 0.3;
-                    newPreDelay = 0.02;
-                    break;
-                case 'plate':
-                    newDecay = 0.8;
-                    newDamping = 12000;
-                    newMix = 0.25;
-                    newPreDelay = 0.01;
-                    break;
-                case 'cathedral':
-                    newDecay = 0.9;
-                    newDamping = 3500;
-                    newMix = 0.4;
-                    newPreDelay = 0.03;
-                    break;
-                case 'spring':
-                    newDecay = 0.85;
-                    newDamping = 10000;
-                    newMix = 0.35;
-                    newPreDelay = 0.005;
-                    break;
-                case 'custom':
-                    newDecay = s.genericReverbCustomSettings.decay;
-                    newDamping = s.genericReverbCustomSettings.damping;
-                    newPreDelay = s.genericReverbCustomSettings.preDelay;
-                    newMix = s.genericReverbCustomSettings.mix;
-                    break;
-                default: // Fallback
-                    newDecay = 0.7;
-                    newDamping = 5000;
-                    newMix = 0.3;
-                    newPreDelay = 0.02;
-                    type = 'hall'; // Ensure type is 'hall' if it was unrecognized
-                    break;
-            }
-            
-            // Apply new values to the audio nodes immediately
-            s.genericReverbPreDelayNode.delayTime.value = newPreDelay;
-            // genericReverbOutputGain will be handled by updateAllEffects()
-            s.combFilters.forEach(comb => {
-                comb.feedback.gain.value = newDecay;
-                comb.filter.frequency.value = newDamping;
-            });
-
-            console.log(`AudioEffectsStore: Generic reverb preset set to "${type}".`);
-            return {
-                ...s,
-                genericReverbDecay: newDecay,
-                genericReverbDamping: newDamping,
-                genericReverbMix: newMix,
-                genericReverbPreDelay: newPreDelay,
-                genericReverbType: type
-            };
-        });
-        audioEffectsStore.updateAllEffects(); // Ensure overall state is updated
-    },
-
-    /**
-     * Updates all effect connections (dry/wet mixes, enable states) based on current store state.
-     * This is called whenever an enable/disable or mix parameter changes.
-     */
-    updateAllEffects: () => {
-        const state = getCurrentState();
-        const { convolverNode, convolverDryGainNode, convolverWetGainNode,
-                convolverBoostGainNode, // NEW: Destructure boost node
-                genericReverbPreDelayNode, genericReverbOutputGain, combFilters,
-                convolverEnabled, impulseResponseBuffer, convolverMix,
-                genericReverbEnabled, genericReverbMix, genericReverbPreDelay, genericReverbDecay, genericReverbDamping } = state;
-
-        if (!convolverNode || !convolverDryGainNode || !convolverWetGainNode || !convolverBoostGainNode || // NEW: Validate boost node
-            !genericReverbPreDelayNode || !genericReverbOutputGain || !combFilters.length) {
-                // console.warn('AudioEffectsStore: Not all nodes available for updateAllEffects. Skipping.');
-                return;
-            }
-
-        // --- Convolver Reverb (IR) Logic ---
-        if (convolverEnabled && impulseResponseBuffer && convolverNode.buffer) {
-            convolverWetGainNode.gain.value = convolverMix;
-            convolverDryGainNode.gain.value = 1 - convolverMix;
-        } else {
-            convolverWetGainNode.gain.value = 0; // Disable wet signal
-            convolverDryGainNode.gain.value = 1; // Full dry signal if convolver is off
-        }
-
-        // --- Convolver Volume Boost Logic (NEW) ---
-        const MAX_CONVOLVER_BOOST_DB = 9; // Increased from 3dB to 6dB for more volume
-        const MIN_MIX_FOR_BOOST = 0.2; // Start boosting from 20% mix
-
-        if (convolverEnabled && convolverMix >= MIN_MIX_FOR_BOOST) {
-            // Normalize convolverMix from [MIN_MIX_FOR_BOOST, 1.0] to [0, 1]
-            const normalizedMix = (convolverMix - MIN_MIX_FOR_BOOST) / (1.0 - MIN_MIX_FOR_BOOST);
-            const boostDb = normalizedMix * MAX_CONVOLVER_BOOST_DB;
-            convolverBoostGainNode.gain.value = Math.pow(10, boostDb / 20); // Convert dB to linear gain
-        } else {
-            convolverBoostGainNode.gain.value = 1; // No boost
-        }
-
-        // --- Generic Reverb Logic ---
-        if (genericReverbEnabled) {
-            genericReverbPreDelayNode.delayTime.value = genericReverbPreDelay;
-            genericReverbOutputGain.gain.value = genericReverbMix; // Control overall output level of generic reverb
-
-            // Update comb filter parameters (in case genericReverbType was 'custom' and updated)
-            for (const comb of combFilters) {
-                comb.feedback.gain.value = genericReverbDecay;
-                comb.filter.frequency.value = genericReverbDamping;
-            }
-        } else {
-            genericReverbOutputGain.gain.value = 0; // Disable generic reverb output
-            // Kill the feedback loops immediately to stop reverb tail
-            for (const comb of combFilters) {
-                comb.feedback.gain.value = 0;
-            }
-        }
-    }
 };
 
 audioEffectsStore.loadSettings(); // Load settings on store initialization
-
-// Export initialEqBands also, as Eq.svelte needs it for rendering labels
-export { initialEqBands };

@@ -44,6 +44,16 @@
     $: genericReverbDamping = audioEffectsState?.genericReverbDamping ?? 6000;
     $: genericReverbPreDelay = audioEffectsState?.genericReverbPreDelay ?? 0.02;
     $: genericReverbType = audioEffectsState?.genericReverbType ?? 'hall';
+    // NEW: Bind modulation parameters from the store
+    $: genericReverbModulationRate = audioEffectsState?.genericReverbModulationRate ?? 2.5;
+    $: genericReverbModulationDepth = audioEffectsState?.genericReverbModulationDepth ?? 0.001;
+    // NEW: Bind compressor parameters from the store
+    $: compressorEnabled = audioEffectsState?.compressorEnabled ?? false;
+    $: compressorThreshold = audioEffectsState?.compressorThreshold ?? -24;
+    $: compressorKnee = audioEffectsState?.compressorKnee ?? 30;
+    $: compressorRatio = audioEffectsState?.compressorRatio ?? 12;
+    $: compressorAttack = audioEffectsState?.compressorAttack ?? 0.003;
+    $: compressorRelease = audioEffectsState?.compressorRelease ?? 0.25;
 
     const PLAYER_UI_LOCAL_STORAGE_KEY = 'musify-player-ui-settings';
     let showEq: boolean = false;
@@ -517,7 +527,7 @@
                     {/if}
                 </button>
                 <button
-                    class="text-gray-400 hover:text-white transition-colors"
+                    class="text-gray-400 hover:text-white transition-colors {showEq ? 'text-green-500' : ''}"
                     on:click={toggleEqVisibility}
                     aria-label="Toggle Equalizer"
                 >
@@ -532,7 +542,7 @@
                     {#if isPlaying}
                         <Pause size={28} fill="white" />
                     {:else}
-                        <Play size={28} fill="white" />
+                        <Play size={28} fill="white" class="ml-0.5" />
                     {/if}
                 </button>
             </div>
@@ -550,14 +560,14 @@
                     class="w-14 h-14 rounded object-cover"
                 />
                 <div class="min-w-0">
-                    <button 
+                    <button
                         class="font-semibold text-sm text-white truncate hover:underline text-left w-full"
                         on:click={navigateToSong}
                         aria-label="View current song details"
                     >
                         {currentSong.name}
                     </button>
-                    <button 
+                    <button
                         class="text-xs text-gray-400 truncate hover:underline text-left w-full"
                         on:click={navigateToArtist}
                         aria-label="View artist page for {currentSong.artistName}"
@@ -653,7 +663,7 @@
                 <ListMusic size={18} />
             </button>
             <button
-                class="text-gray-400 hover:text-white transition-colors"
+                class="text-gray-400 hover:text-white transition-colors {showEq ? 'text-green-500' : ''}"
                 on:click={toggleEqVisibility}
                 aria-label="Toggle Equalizer"
             >
@@ -688,8 +698,8 @@
 </footer>
 
 <!-- EQ Component Overlay -->
-{#if showEq && audioEffectsState?.audioContext && audioEffectsState?.filterNodes && audioEffectsState?.convolverNode}
-    <div class="fixed bottom-16 md:bottom-[90px] right-0 z-1000 p-2.5 flex justify-end">
+{#if showEq && audioEffectsState?.audioContext && audioEffectsState?.filterNodes && audioEffectsState?.convolverNode && audioEffectsState?.compressorNode}
+    <div class="fixed bottom-16 md:bottom-[90px] right-0 z-1000 p-2.5 flex justify-end md:w-[550px]">
         <Eq
             audioContext={audioEffectsState.audioContext}
             filterNodes={audioEffectsState.filterNodes}
@@ -708,6 +718,16 @@
             bind:reverbPreDelay={genericReverbPreDelay}
             bind:reverbType={genericReverbType}
             
+            bind:reverbModulationRate={genericReverbModulationRate}
+            bind:reverbModulationDepth={genericReverbModulationDepth}
+
+            bind:compressorEnabled={compressorEnabled}
+            bind:compressorThreshold={compressorThreshold}
+            bind:compressorKnee={compressorKnee}
+            bind:compressorRatio={compressorRatio}
+            bind:compressorAttack={compressorAttack}
+            bind:compressorRelease={compressorRelease}
+            
             on:updateEqGain={(e) => audioEffectsStore.updateEqGain(e.detail.index, e.detail.value)}
             on:applyEqPreset={(e) => audioEffectsStore.applyEqPreset(e.detail.gains)}
             on:selectIr={(e) => audioEffectsStore.selectIr(e.detail.url)}
@@ -719,6 +739,16 @@
             on:setReverbDecay={(e) => audioEffectsStore.setGenericReverbDecay(e.detail.decay)}
             on:setReverbDamping={(e) => audioEffectsStore.setGenericReverbDamping(e.detail.damping)}
             on:setReverbPreDelay={(e) => audioEffectsStore.setGenericReverbPreDelay(e.detail.preDelay)}
+            
+            on:setReverbModulationRate={(e) => audioEffectsStore.setGenericReverbModulationRate(e.detail.rate)}
+            on:setReverbModulationDepth={(e) => audioEffectsStore.setGenericReverbModulationDepth(e.detail.depth)}
+
+            on:toggleCompressor={(e) => audioEffectsStore.toggleCompressor(e.detail.enabled)}
+            on:setCompressorThreshold={(e) => audioEffectsStore.setCompressorThreshold(e.detail.threshold)}
+            on:setCompressorKnee={(e) => audioEffectsStore.setCompressorKnee(e.detail.knee)}
+            on:setCompressorRatio={(e) => audioEffectsStore.setCompressorRatio(e.detail.ratio)}
+            on:setCompressorAttack={(e) => audioEffectsStore.setCompressorAttack(e.detail.attack)}
+            on:setCompressorRelease={(e) => audioEffectsStore.setCompressorRelease(e.detail.release)}
         />
     </div>
 {/if}
