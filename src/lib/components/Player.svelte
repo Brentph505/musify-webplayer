@@ -54,6 +54,14 @@
     $: compressorRatio = audioEffectsState?.compressorRatio ?? 12;
     $: compressorAttack = audioEffectsState?.compressorAttack ?? 0.003;
     $: compressorRelease = audioEffectsState?.compressorRelease ?? 0.25;
+    $: pannerPosition = audioEffectsState?.pannerPosition ?? { x: 0, y: 0, z: 0 };
+    $: pannerAutomationEnabled = audioEffectsState?.pannerAutomationEnabled ?? false;
+    $: pannerAutomationRate = audioEffectsState?.pannerAutomationRate ?? 0.1;
+    $: spatialAudioEnabled = audioEffectsState?.spatialAudioEnabled ?? true;
+    // NEW: Bind loudness state from the store
+    $: loudnessNormalizationEnabled = audioEffectsState?.loudnessNormalizationEnabled ?? false;
+    $: loudnessTarget = audioEffectsState?.loudnessTarget ?? -14;
+    $: momentaryLoudness = audioEffectsState?.momentaryLoudness ?? -70;
 
     const PLAYER_UI_LOCAL_STORAGE_KEY = 'musify-player-ui-settings';
     let showEq: boolean = false;
@@ -264,6 +272,15 @@
             if (animationFrameId) {
                 cancelAnimationFrame(animationFrameId);
             }
+            // Clear Media Session on component destroy
+            if (typeof window !== 'undefined' && 'mediaSession' in navigator) {
+                navigator.mediaSession.metadata = null;
+                navigator.mediaSession.setActionHandler('play', null);
+                navigator.mediaSession.setActionHandler('pause', null);
+                navigator.mediaSession.setActionHandler('nexttrack', null);
+                navigator.mediaSession.setActionHandler('previoustrack', null);
+                // navigator.mediaSession.setActionHandler('stop', null); // Uncomment if 'stop' handler was set
+            }
         });
     });
 
@@ -307,6 +324,67 @@
              // This covers cases where `isPlaying` is true but `currentSong` is null.
              // It should result in pausing.
              playerStore.pausePlaying();
+        }
+    }
+
+    // NEW: Media Session API integration for browser notifications and background control
+    $: {
+        if (typeof window !== 'undefined' && 'mediaSession' in navigator) {
+            if (currentSong) {
+                // Set Media Session Metadata
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: currentSong.name,
+                    artist: currentSong.artistName,
+                    album: currentSong.albumName,
+                    artwork: [
+                        // Provide multiple sizes for better compatibility and display.
+                        // Ensure albumImageUrl is an absolute URL or data URI.
+                        { src: currentSong.albumImageUrl, sizes: '96x96', type: 'image/jpeg' },
+                        { src: currentSong.albumImageUrl, sizes: '128x128', type: 'image/jpeg' },
+                        { src: currentSong.albumImageUrl, sizes: '192x192', type: 'image/jpeg' },
+                        { src: currentSong.albumImageUrl, sizes: '256x256', type: 'image/jpeg' },
+                        { src: currentSong.albumImageUrl, sizes: '384x384', type: 'image/jpeg' },
+                        { src: currentSong.albumImageUrl, sizes: '512x512', type: 'image/jpeg' },
+                    ],
+                });
+
+                // Set Action Handlers for playback control from system notifications
+                navigator.mediaSession.setActionHandler('play', () => {
+                    console.log('Media Session: Play action received.');
+                    playerStore.resumePlaying();
+                });
+                navigator.mediaSession.setActionHandler('pause', () => {
+                    console.log('Media Session: Pause action received.');
+                    playerStore.pausePlaying();
+                });
+                navigator.mediaSession.setActionHandler('nexttrack', () => {
+                    console.log('Media Session: Next track action received.');
+                    playerStore.playNextSong();
+                });
+                navigator.mediaSession.setActionHandler('previoustrack', () => {
+                    console.log('Media Session: Previous track action received.');
+                    playerStore.playPreviousSong();
+                });
+
+                // Optional: You can add more handlers for seeking if desired
+                // navigator.mediaSession.setActionHandler('seekto', (details) => { /* handle seek */ });
+                // navigator.mediaSession.setActionHandler('seekforward', (details) => { /* handle seek forward */ });
+                // navigator.mediaSession.setActionHandler('seekbackward', (details) => { /* handle seek backward */ });
+                // For a 'stop' action, pausing is often sufficient:
+                // navigator.mediaSession.setActionHandler('stop', () => playerStore.pausePlaying());
+
+            } else {
+                // Clear Media Session if no song is playing to remove the notification
+                navigator.mediaSession.metadata = null;
+                navigator.mediaSession.setActionHandler('play', null);
+                navigator.mediaSession.setActionHandler('pause', null);
+                navigator.mediaSession.setActionHandler('nexttrack', null);
+                navigator.mediaSession.setActionHandler('previoustrack', null);
+                // navigator.mediaSession.setActionHandler('stop', null); // Clear if 'stop' handler was set
+            }
+
+            // Update playback state to inform the browser whether media is actively playing or paused
+            navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
         }
     }
 
@@ -702,14 +780,14 @@
     <div class="fixed bottom-16 md:bottom-[90px] right-0 z-1000 p-2.5 flex justify-end md:w-[550px]">
         <Eq
             audioContext={audioEffectsState.audioContext}
-            filterNodes={audioEffectsState.filterNodes}
             bands={initialEqBands}
-            bind:eqGains={eqGains}
+            filterNodes={audioEffectsState.filterNodes}
             convolverNode={audioEffectsState.convolverNode}
+            impulseResponseBuffer={impulseResponseBuffer}
+            availableIrs={availableIrs}
+            bind:eqGains={eqGains}
             bind:convolverEnabled={convolverEnabled}
             bind:convolverMix={convolverMix}
-            impulseResponseBuffer={impulseResponseBuffer}
-            bind:availableIrs={availableIrs}
             bind:selectedIrUrl={selectedIrUrl}
             bind:reverbEnabled={genericReverbEnabled}
             bind:reverbMix={genericReverbMix}
@@ -717,38 +795,48 @@
             bind:reverbDamping={genericReverbDamping}
             bind:reverbPreDelay={genericReverbPreDelay}
             bind:reverbType={genericReverbType}
-            
             bind:reverbModulationRate={genericReverbModulationRate}
             bind:reverbModulationDepth={genericReverbModulationDepth}
-
             bind:compressorEnabled={compressorEnabled}
             bind:compressorThreshold={compressorThreshold}
             bind:compressorKnee={compressorKnee}
             bind:compressorRatio={compressorRatio}
             bind:compressorAttack={compressorAttack}
             bind:compressorRelease={compressorRelease}
+            bind:pannerPosition={pannerPosition}
+            bind:pannerAutomationEnabled={pannerAutomationEnabled}
+            bind:pannerAutomationRate={pannerAutomationRate}
+            bind:spatialAudioEnabled={spatialAudioEnabled}
             
+            bind:loudnessNormalizationEnabled={loudnessNormalizationEnabled}
+            bind:loudnessTarget={loudnessTarget}
+            momentaryLoudness={momentaryLoudness}
+
             on:updateEqGain={(e) => audioEffectsStore.updateEqGain(e.detail.index, e.detail.value)}
             on:applyEqPreset={(e) => audioEffectsStore.applyEqPreset(e.detail.gains)}
             on:selectIr={(e) => audioEffectsStore.selectIr(e.detail.url)}
-            on:selectReverbType={(e) => audioEffectsStore.setGenericReverbType(e.detail.type)}
             on:toggleConvolver={(e) => audioEffectsStore.toggleConvolver(e.detail.enabled)}
             on:setConvolverMix={(e) => audioEffectsStore.setConvolverMix(e.detail.mix)}
-            on:toggleReverb={(e) => audioEffectsStore.toggleGenericReverb(e.detail.enabled)}
-            on:setReverbMix={(e) => audioEffectsStore.setGenericReverbMix(e.detail.mix)}
-            on:setReverbDecay={(e) => audioEffectsStore.setGenericReverbDecay(e.detail.decay)}
-            on:setReverbDamping={(e) => audioEffectsStore.setGenericReverbDamping(e.detail.damping)}
-            on:setReverbPreDelay={(e) => audioEffectsStore.setGenericReverbPreDelay(e.detail.preDelay)}
-            
-            on:setReverbModulationRate={(e) => audioEffectsStore.setGenericReverbModulationRate(e.detail.rate)}
-            on:setReverbModulationDepth={(e) => audioEffectsStore.setGenericReverbModulationDepth(e.detail.depth)}
-
+            on:toggleGenericReverb={(e) => audioEffectsStore.toggleGenericReverb(e.detail.enabled)}
+            on:setGenericReverbMix={(e) => audioEffectsStore.setGenericReverbMix(e.detail.mix)}
+            on:setGenericReverbDecay={(e) => audioEffectsStore.setGenericReverbDecay(e.detail.decay)}
+            on:setGenericReverbDamping={(e) => audioEffectsStore.setGenericReverbDamping(e.detail.damping)}
+            on:setGenericReverbPreDelay={(e) => audioEffectsStore.setGenericReverbPreDelay(e.detail.preDelay)}
+            on:setGenericReverbType={(e) => audioEffectsStore.setGenericReverbType(e.detail.type)}
+            on:setGenericReverbModulationRate={(e) => audioEffectsStore.setGenericReverbModulationRate(e.detail.rate)}
+            on:setGenericReverbModulationDepth={(e) => audioEffectsStore.setGenericReverbModulationDepth(e.detail.depth)}
             on:toggleCompressor={(e) => audioEffectsStore.toggleCompressor(e.detail.enabled)}
             on:setCompressorThreshold={(e) => audioEffectsStore.setCompressorThreshold(e.detail.threshold)}
             on:setCompressorKnee={(e) => audioEffectsStore.setCompressorKnee(e.detail.knee)}
             on:setCompressorRatio={(e) => audioEffectsStore.setCompressorRatio(e.detail.ratio)}
             on:setCompressorAttack={(e) => audioEffectsStore.setCompressorAttack(e.detail.attack)}
             on:setCompressorRelease={(e) => audioEffectsStore.setCompressorRelease(e.detail.release)}
+            on:setPannerPosition={(e) => audioEffectsStore.setPannerPosition(e.detail.position)}
+            on:togglePannerAutomation={(e) => audioEffectsStore.togglePannerAutomation(e.detail.enabled)}
+            on:setPannerAutomationRate={(e) => audioEffectsStore.setPannerAutomationRate(e.detail.rate)}
+            on:toggleSpatialAudio={(e) => audioEffectsStore.toggleSpatialAudio(e.detail.enabled)}
+            on:toggleLoudnessNormalization={(e) => audioEffectsStore.toggleLoudnessNormalization(e.detail.enabled)}
+            on:setLoudnessTarget={(e) => audioEffectsStore.setLoudnessTarget(e.detail.target)}
         />
     </div>
 {/if}

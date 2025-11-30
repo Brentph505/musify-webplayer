@@ -3,6 +3,8 @@
     import Music from 'lucide-svelte/icons/music'; // Import Lucide icons
     import Sliders from 'lucide-svelte/icons/sliders';
     import Zap from 'lucide-svelte/icons/zap';
+    import Ear from 'lucide-svelte/icons/ear';
+    import Gauge from 'lucide-svelte/icons/gauge'; // NEW: Import icon for Loudness
 
     const dispatch = createEventDispatcher(); // Initialize dispatcher for custom events
 
@@ -33,10 +35,25 @@
     export let compressorRatio: number;    // Two-way bound
     export let compressorAttack: number;   // Two-way bound
     export let compressorRelease: number;  // Two-way bound
+    // NEW: Add props for Spatial Audio (Panner)
+    export let pannerPosition: { x: number; y: number; z: number }; // Two-way bound
+    export let pannerAutomationEnabled: boolean; // Two-way bound
+    export let pannerAutomationRate: number; // Two-way bound
+    export let spatialAudioEnabled: boolean; // Two-way bound
+    // NEW: Add props for Loudness Normalization
+    export let loudnessNormalizationEnabled: boolean; // Two-way bound
+    export let loudnessTarget: number; // Two-way bound
+    export let momentaryLoudness: number; // One-way bound for display
 
     let irDropdownOpen: boolean = false;
     let reverbTypeDropdownOpen: boolean = false; // Still needed for the reverb type dropdown within the reverb card
     let eqPresetDropdownOpen: boolean = false;
+    
+    // UI state for collapsible cards
+    let reverbCardOpen: boolean = false;
+    let compressorCardOpen: boolean = false;
+    let spatialAudioCardOpen: boolean = false;
+    let loudnessCardOpen: boolean = false; // NEW: UI state for Loudness card
 
     // Available reverb types, including 'Custom'
     const reverbTypes = [
@@ -57,6 +74,12 @@
         { name: 'Rock', gains: [4, 2, -2, 0, 3, 5] },
         { name: 'Pop', gains: [3, 0, -1, 2, 4, 3] },
         { name: 'Jazz', gains: [4, 2, 0, -2, -3, -4] },
+    ];
+
+    // NEW: Loudness Target Presets
+    const loudnessPresets = [
+        { name: 'Spotify', value: -14 },
+        { name: 'Apple Music', value: -16 },
     ];
 
     let selectedEqPresetName: string = 'Flat';
@@ -120,7 +143,7 @@
     function handleSelectReverbType(type: string) {
         reverbType = type; // Update bound prop directly
         reverbTypeDropdownOpen = false;
-        dispatch('selectReverbType', { type }); // Notify parent for audio logic
+        dispatch('setGenericReverbType', { type }); // Notify parent for audio logic
     }
 
     function toggleEqPresetDropdown() {
@@ -145,44 +168,44 @@
     function handleReverbToggle(event: Event) {
         const enabled = (event.target as HTMLInputElement).checked;
         reverbEnabled = enabled;
-        dispatch('toggleReverb', { enabled });
+        dispatch('toggleGenericReverb', { enabled });
     }
 
     function handleReverbMixChange(event: Event) {
         const mix = (event.target as HTMLInputElement).valueAsNumber;
         reverbMix = mix;
-        dispatch('setReverbMix', { mix });
+        dispatch('setGenericReverbMix', { mix });
     }
 
     function handleReverbDecayChange(event: Event) {
         const decay = (event.target as HTMLInputElement).valueAsNumber;
         reverbDecay = decay;
-        dispatch('setReverbDecay', { decay });
+        dispatch('setGenericReverbDecay', { decay });
     }
 
     function handleReverbDampingChange(event: Event) {
         const damping = (event.target as HTMLInputElement).valueAsNumber;
         reverbDamping = damping;
-        dispatch('setReverbDamping', { damping });
+        dispatch('setGenericReverbDamping', { damping });
     }
 
     function handleReverbPreDelayChange(event: Event) {
         const preDelay = (event.target as HTMLInputElement).valueAsNumber;
         reverbPreDelay = preDelay;
-        dispatch('setReverbPreDelay', { preDelay });
+        dispatch('setGenericReverbPreDelay', { preDelay });
     }
 
     // NEW: Handlers for new reverb modulation parameters
     function handleReverbModRateChange(event: Event) {
         const rate = (event.target as HTMLInputElement).valueAsNumber;
         reverbModulationRate = rate;
-        dispatch('setReverbModulationRate', { rate });
+        dispatch('setGenericReverbModulationRate', { rate });
     }
 
     function handleReverbModDepthChange(event: Event) {
         const depth = (event.target as HTMLInputElement).valueAsNumber;
         reverbModulationDepth = depth;
-        dispatch('setReverbModulationDepth', { depth });
+        dispatch('setGenericReverbModulationDepth', { depth });
     }
 
     // NEW: Handlers for Dynamics Compressor parameters
@@ -222,6 +245,45 @@
         dispatch('setCompressorRelease', { release });
     }
 
+    // NEW: Handlers for Spatial Audio (Panner)
+    function handlePannerChange(axis: 'x' | 'y' | 'z', event: Event) {
+        const value = (event.target as HTMLInputElement).valueAsNumber;
+        // Update the bound prop to keep UI in sync
+        pannerPosition = { ...pannerPosition, [axis]: value };
+        // Dispatch only the changed value to the store for efficiency
+        dispatch('setPannerPosition', { position: { [axis]: value } });
+    }
+
+    function handlePannerAutomationToggle(event: Event) {
+        const enabled = (event.target as HTMLInputElement).checked;
+        pannerAutomationEnabled = enabled;
+        dispatch('togglePannerAutomation', { enabled });
+    }
+
+    function handlePannerAutomationRateChange(event: Event) {
+        const rate = (event.target as HTMLInputElement).valueAsNumber;
+        pannerAutomationRate = rate;
+        dispatch('setPannerAutomationRate', { rate });
+    }
+
+    function handleSpatialAudioToggle(event: Event) {
+        const enabled = (event.target as HTMLInputElement).checked;
+        spatialAudioEnabled = enabled;
+        dispatch('toggleSpatialAudio', { enabled });
+    }
+
+    // NEW: Handlers for Loudness Normalization
+    function handleLoudnessNormalizationToggle(event: Event) {
+        const enabled = (event.target as HTMLInputElement).checked;
+        loudnessNormalizationEnabled = enabled;
+        dispatch('toggleLoudnessNormalization', { enabled });
+    }
+
+    function handleLoudnessTargetChange(value: number) {
+        loudnessTarget = value;
+        dispatch('setLoudnessTarget', { target: value });
+    }
+
 
     function handleClickOutside(event: MouseEvent) {
         const irDropdownElement = document.getElementById('ir-custom-dropdown');
@@ -244,12 +306,7 @@
 
 <div class="eq-scroll-wrapper">
   <div class="eq-controls">
-    <h3 class="title">
-      <Music size={24} />
-      Audio Effects
-    </h3>
-
-    <!-- EQ Presets & Sliders -->
+    <!-- EQ Section -->
     <div class="card">
       <div class="card-header">
         <span>EQ Presets</span>
@@ -280,8 +337,9 @@
       <div class="eq-grid">
         {#each bands as band, i}
           <div class="eq-item">
-            <label>{band.frequency}Hz</label>
+            <label for={`eq-slider-${i}`}>{band.frequency}Hz</label>
             <input
+              id={`eq-slider-${i}`}
               type="range"
               min="-20"
               max="20"
@@ -298,13 +356,12 @@
 
     <!-- Reverb Section -->
     <div class="card collapsible">
-      <div class="card-header" on:click={() => reverbEnabled = !reverbEnabled}>
+      <button type="button" class="card-header" on:click={() => reverbCardOpen = !reverbCardOpen}>
         <span class="card-header-label">
           <Sliders size={18} /> Reverb
         </span>
-        <input type="checkbox" bind:checked={reverbEnabled} on:change={handleReverbToggle} />
-      </div>
-      {#if reverbEnabled}
+      </button>
+      {#if reverbCardOpen}
         <div class="card-body">
           <!-- IR Reverb -->
           <div class="reverb-subheader">
@@ -312,8 +369,8 @@
             <input type="checkbox" id="convolver-enable" bind:checked={convolverEnabled} on:change={handleConvolverToggle} disabled={!impulseResponseBuffer} />
           </div>
           <div class="custom-dropdown-wrapper" id="ir-custom-dropdown">
-            <button class="dropdown-toggle" on:click|stopPropagation={toggleIrDropdown} aria-expanded={irDropdownOpen}>
-              {selectedIrUrl ? getFilenameFromUrl(selectedIrUrl) : 'Custom IR'} <span class="arrow">▼</span>
+            <button class="dropdown-toggle" on:click|stopPropagation={toggleIrDropdown} aria-expanded={irDropdownOpen} disabled={!convolverEnabled}>
+              {selectedIrUrl ? getFilenameFromUrl(selectedIrUrl) : 'Select IR'} <span class="arrow">▼</span>
             </button>
             {#if irDropdownOpen}
               <ul class="dropdown-menu" role="menu">
@@ -322,7 +379,7 @@
                 {:else}
                   <li role="presentation">
                     <button class="dropdown-item" class:selected={!selectedIrUrl} on:click={() => handleSelectIr(null)} role="menuitem">
-                      Custom IR
+                      No IR selected
                     </button>
                   </li>
                   {#each availableIrs as irUrl (irUrl)}
@@ -345,18 +402,19 @@
             </div>
           {/if}
           
-          {#if !impulseResponseBuffer && selectedIrUrl}
+          {#if !impulseResponseBuffer && selectedIrUrl && convolverEnabled}
             <p class="status-message loading">Loading...</p>
-          {:else if !selectedIrUrl}
+          {:else if !selectedIrUrl && convolverEnabled}
             <p class="status-message info">No IR selected</p>
           {/if}
 
-          <!-- Standard Reverb Type Dropdown -->
+          <!-- Standard Reverb -->
           <div class="reverb-subheader" style="margin-top: 15px;">
             <span class="reverb-label">Standard Reverb</span>
+            <input type="checkbox" bind:checked={reverbEnabled} on:change={handleReverbToggle} />
           </div>
           <div class="custom-dropdown-wrapper" id="reverb-type-dropdown">
-            <button class="dropdown-toggle" on:click|stopPropagation={toggleReverbTypeDropdown} aria-expanded={reverbTypeDropdownOpen}>
+            <button class="dropdown-toggle" on:click|stopPropagation={toggleReverbTypeDropdown} aria-expanded={reverbTypeDropdownOpen} disabled={!reverbEnabled}>
               {reverbTypes.find(r => r.value === reverbType)?.label || 'Custom'} <span class="arrow">▼</span>
             </button>
             {#if reverbTypeDropdownOpen}
@@ -380,32 +438,32 @@
           <!-- Standard Reverb Sliders -->
           <div class="slider-control">
             <span>Mix:</span>
-            <input type="range" min="0" max="1" step="0.01" bind:value={reverbMix} on:input={handleReverbMixChange} class="horizontal-slider"/>
+            <input type="range" min="0" max="1" step="0.01" bind:value={reverbMix} on:input={handleReverbMixChange} class="horizontal-slider" disabled={!reverbEnabled}/>
             <span>{(reverbMix*100).toFixed(0)}%</span>
           </div>
           <div class="slider-control">
             <span>Decay:</span>
-            <input type="range" min="0" max="0.95" step="0.01" bind:value={reverbDecay} on:input={handleReverbDecayChange} class="horizontal-slider"/>
+            <input type="range" min="0" max="0.95" step="0.01" bind:value={reverbDecay} on:input={handleReverbDecayChange} class="horizontal-slider" disabled={!reverbEnabled}/>
             <span>{(reverbDecay*100).toFixed(0)}%</span>
           </div>
           <div class="slider-control">
             <span>Damping:</span>
-            <input type="range" min="500" max="15000" step="100" bind:value={reverbDamping} on:input={handleReverbDampingChange} class="horizontal-slider"/>
+            <input type="range" min="500" max="15000" step="100" bind:value={reverbDamping} on:input={handleReverbDampingChange} class="horizontal-slider" disabled={!reverbEnabled}/>
             <span>{reverbDamping.toFixed(0)}Hz</span>
           </div>
           <div class="slider-control">
             <span>Pre-delay:</span>
-            <input type="range" min="0" max="0.2" step="0.001" bind:value={reverbPreDelay} on:input={handleReverbPreDelayChange} class="horizontal-slider"/>
+            <input type="range" min="0" max="0.2" step="0.001" bind:value={reverbPreDelay} on:input={handleReverbPreDelayChange} class="horizontal-slider" disabled={!reverbEnabled}/>
             <span>{(reverbPreDelay*1000).toFixed(0)}ms</span>
           </div>
           <div class="slider-control">
             <span>Mod Rate:</span>
-            <input type="range" min="0" max="10" step="0.1" bind:value={reverbModulationRate} on:input={handleReverbModRateChange} class="horizontal-slider"/>
+            <input type="range" min="0" max="10" step="0.1" bind:value={reverbModulationRate} on:input={handleReverbModRateChange} class="horizontal-slider" disabled={!reverbEnabled}/>
             <span>{reverbModulationRate.toFixed(1)}Hz</span>
           </div>
           <div class="slider-control">
             <span>Mod Depth:</span>
-            <input type="range" min="0" max="0.005" step="0.0001" bind:value={reverbModulationDepth} on:input={handleReverbModDepthChange} class="horizontal-slider"/>
+            <input type="range" min="0" max="0.005" step="0.0001" bind:value={reverbModulationDepth} on:input={handleReverbModDepthChange} class="horizontal-slider" disabled={!reverbEnabled}/>
             <span>{(reverbModulationDepth * 1000).toFixed(1)}ms</span>
           </div>
         </div>
@@ -414,13 +472,13 @@
 
     <!-- Compressor Section -->
     <div class="card collapsible">
-      <div class="card-header" on:click={() => compressorEnabled = !compressorEnabled}>
+      <button type="button" class="card-header" on:click={() => compressorCardOpen = !compressorCardOpen}>
         <span class="card-header-label">
           <Zap size={18} /> Compressor
         </span>
-        <input type="checkbox" bind:checked={compressorEnabled} on:change={handleCompressorToggle} />
-      </div>
-      {#if compressorEnabled}
+        <input type="checkbox" on:click|stopPropagation bind:checked={compressorEnabled} on:change={handleCompressorToggle} />
+      </button>
+      {#if compressorCardOpen}
         <div class="card-body">
           <div class="slider-control">
             <span>Threshold:</span>
@@ -450,6 +508,85 @@
         </div>
       {/if}
     </div>
+
+    <!-- Spatial Audio Section -->
+    <div class="card collapsible">
+      <button type="button" class="card-header" on:click={() => spatialAudioCardOpen = !spatialAudioCardOpen}>
+        <span class="card-header-label">
+          <Ear size={18} /> Spatial Audio
+        </span>
+        <input type="checkbox" on:click|stopPropagation bind:checked={spatialAudioEnabled} on:change={handleSpatialAudioToggle} />
+      </button>
+      {#if spatialAudioCardOpen}
+        <div class="card-body">
+          <div class="reverb-subheader">
+            <span class="reverb-label">8D Automation</span>
+            <input type="checkbox" bind:checked={pannerAutomationEnabled} on:change={handlePannerAutomationToggle} disabled={!spatialAudioEnabled} />
+          </div>
+           <div class="slider-control">
+            <span>Speed:</span>
+            <input type="range" min="0.05" max="1" step="0.01" bind:value={pannerAutomationRate} on:input={handlePannerAutomationRateChange} class="horizontal-slider" disabled={!pannerAutomationEnabled || !spatialAudioEnabled}/>
+            <span>{pannerAutomationRate.toFixed(2)}</span>
+          </div>
+
+          <hr class="border-gray-700 my-2">
+
+          <div class="slider-control">
+            <span>X (Left/Right):</span>
+            <input type="range" min="-10" max="10" step="0.1" bind:value={pannerPosition.x} on:input={(e) => handlePannerChange('x', e)} class="horizontal-slider" disabled={pannerAutomationEnabled || !spatialAudioEnabled}/>
+            <span>{pannerPosition.x.toFixed(1)}</span>
+          </div>
+          <div class="slider-control">
+            <span>Y (Up/Down):</span>
+            <input type="range" min="-10" max="10" step="0.1" bind:value={pannerPosition.y} on:input={(e) => handlePannerChange('y', e)} class="horizontal-slider" disabled={pannerAutomationEnabled || !spatialAudioEnabled}/>
+            <span>{pannerPosition.y.toFixed(1)}</span>
+          </div>
+          <div class="slider-control">
+            <span>Z (Forward/Back):</span>
+            <input type="range" min="-10" max="10" step="0.1" bind:value={pannerPosition.z} on:input={(e) => handlePannerChange('z', e)} class="horizontal-slider" disabled={pannerAutomationEnabled || !spatialAudioEnabled}/>
+            <span>{pannerPosition.z.toFixed(1)}</span>
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <!-- NEW: Loudness Normalization Section -->
+    <div class="card collapsible">
+      <button type="button" class="card-header" on:click={() => loudnessCardOpen = !loudnessCardOpen}>
+        <span class="card-header-label">
+          <Gauge size={18} /> Loudness Matching
+        </span>
+        <input type="checkbox" on:click|stopPropagation bind:checked={loudnessNormalizationEnabled} on:change={handleLoudnessNormalizationToggle} />
+      </button>
+      {#if loudnessCardOpen}
+        <div class="card-body">
+          <div class="loudness-presets">
+            {#each loudnessPresets as preset (preset.name)}
+              <button
+                class="preset-button"
+                class:selected={loudnessTarget === preset.value}
+                on:click={() => handleLoudnessTargetChange(preset.value)}
+                disabled={!loudnessNormalizationEnabled}
+              >
+                {preset.name} <span>{preset.value} LUFS</span>
+              </button>
+            {/each}
+          </div>
+
+          <div class="slider-control">
+            <span>Target:</span>
+            <input type="range" min="-24" max="-8" step="0.5" bind:value={loudnessTarget} on:input={(e) => handleLoudnessTargetChange((e.target as HTMLInputElement).valueAsNumber)} class="horizontal-slider" disabled={!loudnessNormalizationEnabled}/>
+            <span>{loudnessTarget.toFixed(1)} LUFS</span>
+          </div>
+
+          <div class="status-display">
+            <span>Momentary Loudness:</span>
+            <span class="value">{momentaryLoudness.toFixed(1)} LUFS</span>
+          </div>
+        </div>
+      {/if}
+    </div>
+
   </div>
 </div>
 
@@ -530,6 +667,14 @@
       font-weight: 600;
       color: #1DB954;
       font-size: 0.85em; /* Made smaller for desktop */
+    }
+
+    /* Add this rule to reset default button styles for card headers */
+    button.card-header {
+        border: none;
+        width: 100%;
+        font-family: inherit;
+        text-align: left;
     }
 
     .card-header .card-header-label {
@@ -632,6 +777,13 @@
     .dropdown-toggle:focus {
         border-color: #1DB954;
         outline: none;
+    }
+
+    .dropdown-toggle:disabled {
+        background-color: #2a2a2a;
+        color: #777;
+        cursor: not-allowed;
+        border-color: #444;
     }
 
     .arrow {
@@ -743,6 +895,14 @@
         height: 6px;
     }
 
+    .horizontal-slider:disabled::-webkit-slider-thumb {
+        background: #777;
+    }
+
+    .horizontal-slider:disabled::-moz-range-thumb {
+        background: #777;
+    }
+
     /* Status Messages */
     .status-message {
         text-align: center;
@@ -757,6 +917,72 @@
     .status-message.info {
         color: #9bd3ff;
     }
+
+    /* NEW STYLES for Loudness Card */
+    .loudness-presets {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+
+    .preset-button {
+        padding: 6px 8px;
+        border-radius: 4px;
+        border: 1px solid #555;
+        background-color: #333;
+        color: #fff;
+        font-size: 0.75em;
+        cursor: pointer;
+        text-align: center;
+        transition: all 0.2s ease;
+    }
+    
+    .preset-button:hover {
+        border-color: #1DB954;
+    }
+
+    .preset-button.selected {
+        background-color: #1DB954;
+        color: #000;
+        font-weight: bold;
+        border-color: #1DB954;
+    }
+
+    .preset-button:disabled {
+        background-color: #2a2a2a;
+        color: #777;
+        cursor: not-allowed;
+        border-color: #444;
+    }
+
+    .preset-button span {
+        display: block;
+        font-size: 0.9em;
+        color: #b3b3b3;
+    }
+    
+    .preset-button.selected span {
+        color: #000;
+    }
+
+    .status-display {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background-color: #2a2a2a;
+      padding: 8px 10px;
+      border-radius: 4px;
+      margin-top: 5px;
+      font-size: 0.8em;
+      color: #b3b3b3;
+    }
+
+    .status-display .value {
+      font-weight: bold;
+      color: #1DB954;
+    }
+
 
     /* Responsive Design */
     @media (max-width: 768px) {
