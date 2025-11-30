@@ -509,6 +509,8 @@
     on:loadedmetadata={handleLoadedMetadata}
     on:ended={handleEnded}
     on:error={handleError}
+    on:play={() => { if (!isPlaying) playerStore.resumePlaying(); }} 
+    on:pause={() => { if (isPlaying) playerStore.pausePlaying(); }} 
     preload="metadata"
     crossorigin="anonymous"
 ></audio>
