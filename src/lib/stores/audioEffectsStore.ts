@@ -16,8 +16,8 @@ export const initialEqBands = [
 export const defaultGenericReverbCustomSettings = {
     decay: 0.6,
     damping: 6000,
-    preDelay: 0.02,
     mix: 0.2,
+    preDelay: 0.02,
     modulationRate: 2.5,
     modulationDepth: 0.001
 };
@@ -77,9 +77,6 @@ export type AudioEffectsState = {
     combMergerNode: GainNode | null;
     analyserNode: AnalyserNode | null;
     compressorNode: DynamicsCompressorNode | null;
-    // NEW: Cross-fader nodes for compressor
-    compressorInputGainNode: GainNode | null;
-    compressorBypassGainNode: GainNode | null;
     pannerNode: PannerNode | null;
     // NEW: Cross-fader nodes for spatial audio
     spatialWetGainNode: GainNode | null;
@@ -88,10 +85,6 @@ export type AudioEffectsState = {
     loudnessNormalizationGainNode: GainNode | null;
     loudnessMeterNode: AudioWorkletNode | null;
     masterLimiterNode: DynamicsCompressorNode | null;
-
-    // NEW: Handlers for cleanup
-    _visibilityChangeHandler?: (this: Document, ev: Event) => any;
-    _pageHideHandler?: (this: Window, ev: Event) => any;
 };
 
 // ---------------------------
@@ -146,9 +139,6 @@ const initialAudioEffectsState: AudioEffectsState = {
     combMergerNode: null,
     analyserNode: null,
     compressorNode: null,
-    // NEW: Cross-fader nodes for compressor
-    compressorInputGainNode: null,
-    compressorBypassGainNode: null,
     pannerNode: null,
     // NEW: Cross-fader nodes for spatial audio
     spatialWetGainNode: null,
@@ -156,37 +146,17 @@ const initialAudioEffectsState: AudioEffectsState = {
     // NEW: Loudness nodes
     loudnessNormalizationGainNode: null,
     loudnessMeterNode: null,
-    masterLimiterNode: null,
-    // NEW: Handlers for cleanup
-    _visibilityChangeHandler: undefined,
-    _pageHideHandler: undefined
+    masterLimiterNode: null
 };
 
 const store = writable<AudioEffectsState>(initialAudioEffectsState);
-// REMOVED: pannerAutomationIntervalId as it's replaced by pannerAutomationFrameId
-// let pannerAutomationIntervalId: number | null = null;
-// NEW: Global state for requestAnimationFrame
-let pannerAutomationFrameId: number | null = null;
-let pannerAutomationStartTime: number | null = null; // To keep track of relative time for automation
+let pannerAutomationIntervalId: number | null = null;
+// Store for the visibility change listener reference to remove it later
+let visibilityChangeListener: (() => void) | null = null;
 
 // ---------------------------
 // Helper Functions
 // ---------------------------
-
-/**
- * Creates a debounced function that delays invoking `func` until after `waitFor` milliseconds
- * have elapsed since the last time the debounced function was invoked.
- */
-const debounce = <F extends (...args: any[]) => any>(func: F, waitFor: number) => {
-    let timeout: number | null = null;
-
-    return (...args: Parameters<F>): void => {
-        if (timeout !== null) {
-            clearTimeout(timeout);
-        }
-        timeout = setTimeout(() => func(...args), waitFor) as unknown as number;
-    };
-};
 
 const getCurrentState = () => get(store);
 
@@ -223,13 +193,7 @@ const saveToLocalStorage = (state: AudioEffectsState) => {
     console.log('AudioEffectsStore: Saved audio settings to localStorage.');
 };
 
-// Create a debounced version of the save function to avoid excessive writes.
-const debouncedSaveToLocalStorage = debounce(saveToLocalStorage, 1000);
-
-// CHANGED: Increased gain compensation for spatial audio and updated comment
-// WARNING: A value of 10.0 (+20dB) is a significant boost. Monitor for potential internal clipping
-// before the master limiter, especially with complex mixes or high input levels.
-const SPATIAL_AUDIO_WET_GAIN_COMPENSATION = 10.0;
+const SPATIAL_AUDIO_WET_GAIN_COMPENSATION = 10.0; // ~+5dB boost. This compensates for the perceived volume drop from HRTF panning to better match the bypass volume.
 
 const updateSpatialAudioFade = (state: AudioEffectsState) => {
     if (!state.spatialWetGainNode || !state.spatialBypassGainNode || !state.audioContext) return;
@@ -306,62 +270,52 @@ const updateGenericReverb = (state: AudioEffectsState) => {
         // Kill the feedback loops immediately to stop reverb tail
         combFilters.forEach(comb => {
             comb.feedback.gain.linearRampToValueAtTime(0, rampTime);
-            // Kill modulation when reverb is off to save resources
-            reverbModGains.forEach(g => g.gain.linearRampToValueAtTime(0, rampTime));
         });
+        // Kill modulation when reverb is off to save resources
+        reverbModGains.forEach(g => g.gain.linearRampToValueAtTime(0, rampTime));
     }
 };
 
 const updateCompressor = (state: AudioEffectsState) => {
-    const { compressorNode, compressorEnabled, compressorThreshold, compressorKnee, compressorRatio, compressorAttack, compressorRelease, audioContext, compressorInputGainNode, compressorBypassGainNode } = state;
-    if (!compressorNode || !audioContext || !compressorInputGainNode || !compressorBypassGainNode) {
-        console.warn('AudioEffectsStore: Compressor nodes not ready for update.');
+    const { compressorNode, compressorEnabled, compressorThreshold, compressorKnee, compressorRatio, compressorAttack, compressorRelease, audioContext } = state;
+    if (!compressorNode || !audioContext) {
+        console.warn('AudioEffectsStore: Compressor node or audio context not ready for update.');
         return;
     }
 
     const now = audioContext.currentTime;
-    const rampTime = now + 0.05; // 50ms cross-fade for smooth enabling/disabling
+    const rampTime = now + 0.02; // Short ramp for compressor parameters
 
     if (compressorEnabled) {
-        // Apply settings to the compressor node itself
         compressorNode.threshold.linearRampToValueAtTime(compressorThreshold, rampTime);
         compressorNode.knee.linearRampToValueAtTime(compressorKnee, rampTime);
         compressorNode.ratio.linearRampToValueAtTime(compressorRatio, rampTime);
         compressorNode.attack.linearRampToValueAtTime(compressorAttack, rampTime);
         compressorNode.release.linearRampToValueAtTime(compressorRelease, rampTime);
-        
-        // Cross-fade to the compressed signal path
-        compressorInputGainNode.gain.linearRampToValueAtTime(1.0, rampTime);
-        compressorBypassGainNode.gain.linearRampToValueAtTime(0.0, rampTime);
     } else {
-        // Cross-fade to the bypass signal path
-        compressorInputGainNode.gain.linearRampToValueAtTime(0.0, rampTime);
-        compressorBypassGainNode.gain.linearRampToValueAtTime(1.0, rampTime);
-        
-        // While not strictly necessary due to the bypass, it's good practice to reset
-        // the compressor to a neutral state when disabled.
+        // Effectively bypass the compressor
         compressorNode.threshold.linearRampToValueAtTime(0, rampTime);
         compressorNode.ratio.linearRampToValueAtTime(1, rampTime);
+        compressorNode.attack.linearRampToValueAtTime(0, rampTime);
+        compressorNode.release.linearRampToValueAtTime(0, rampTime);
+        compressorNode.knee.linearRampToValueAtTime(0, rampTime);
     }
 };
 
 const updatePanner = (state: AudioEffectsState) => {
     if (!state.pannerNode || !state.audioContext) return;
     // If automation is running, it controls the panner position.
-    if (state.pannerAutomationEnabled) return;
-
-    // To prevent clicks and ensure smooth manual updates when updateAllEffects is called
-    // (e.g., due to other effect changes), apply a small ramp.
-    const now = state.audioContext.currentTime;
-    const rampDuration = 0.01; // 10ms ramp for stability
-    const rampTargetTime = now + rampDuration;
-
-    state.pannerNode.positionX.linearRampToValueAtTime(state.pannerPosition.x, rampTargetTime);
-    state.pannerNode.positionY.linearRampToValueAtTime(state.pannerPosition.y, rampTargetTime);
-    state.pannerNode.positionZ.linearRampToValueAtTime(state.pannerPosition.z, rampTargetTime);
+    // If pannerAutomationEnabled is false, then manual values apply.
+    if (state.pannerAutomationEnabled) {
+        // Automation handles setting positions. We do nothing here.
+    } else {
+        // Manual control: set values only if automation is off.
+        state.pannerNode.positionX.setValueAtTime(state.pannerPosition.x, state.audioContext.currentTime);
+        state.pannerNode.positionY.setValueAtTime(state.pannerPosition.y, state.audioContext.currentTime);
+        state.pannerNode.positionZ.setValueAtTime(state.pannerPosition.z, state.audioContext.currentTime);
+    }
 };
 
-// NEW: Loudness Normalization Helper
 const updateLoudnessNormalization = (state: AudioEffectsState) => {
     if (!state.loudnessNormalizationGainNode || !state.audioContext) return;
 
@@ -372,109 +326,128 @@ const updateLoudnessNormalization = (state: AudioEffectsState) => {
     // If it's enabled, the onmessage handler from the worklet will control the gain, so no 'else' is needed here.
 };
 
-const pannerAutomationLoop = (timestamp: DOMHighResTimeStamp) => { // timestamp provided by requestAnimationFrame
-    const state = getCurrentState();
-    // Stop automation if disabled, nodes not ready, or AudioContext is not running
-    if (!state.pannerAutomationEnabled || !state.pannerNode || !state.audioContext || state.audioContext.state !== 'running') {
-        if (pannerAutomationFrameId) cancelAnimationFrame(pannerAutomationFrameId);
-        pannerAutomationFrameId = null;
-        pannerAutomationStartTime = null;
-        return;
-    }
+const PANNER_AUTOMATION_INTERVAL_MS = 50; // 20 updates per second
 
-    // Initialize pannerAutomationStartTime on first run or after a pause
-    if (pannerAutomationStartTime === null) {
-        pannerAutomationStartTime = state.audioContext.currentTime;
+const pannerAutomationLoop = () => {
+    const state = getCurrentState();
+    // Automation should only run if enabled and the AudioContext is running.
+    if (!state.pannerAutomationEnabled || !state.pannerNode || !state.audioContext || state.audioContext.state !== 'running') {
+        if (pannerAutomationIntervalId) clearInterval(pannerAutomationIntervalId);
+        pannerAutomationIntervalId = null;
+        return;
     }
 
     const speed = state.pannerAutomationRate;
     const radius = 8; // The "distance" of the sound source
-    // Use audioContext.currentTime for synchronization with the audio graph
-    const relativeTime = state.audioContext.currentTime - pannerAutomationStartTime;
+    const time = Date.now() / 1000;
 
-    const newX = Math.sin(relativeTime * speed) * radius;
-    const newZ = Math.cos(relativeTime * speed) * radius;
-    // NEW: Calculate Y position for vertical oscillation
-    const newY = Math.sin(relativeTime * speed * 0.75) * (radius / 2); // Slower vertical motion, half amplitude
+    const newX = Math.sin(time * speed) * radius;
+    const newZ = Math.cos(time * speed) * radius;
 
     const now = state.audioContext.currentTime;
-    // Schedule a smooth ramp to the new position over a very short duration.
-    // This provides smoother movement and is more resilient to timing variations.
-    const rampDuration = 0.05; // 50ms ramp for visual smoothness and to avoid hard jumps
-    const rampTargetTime = now + rampDuration;
+    // Schedule a smooth ramp to the new position over the next interval period.
+    const rampTime = now + PANNER_AUTOMATION_INTERVAL_MS / 1000;
 
-    state.pannerNode.positionX.linearRampToValueAtTime(newX, rampTargetTime);
-    state.pannerNode.positionZ.linearRampToValueAtTime(newZ, rampTargetTime);
-    state.pannerNode.positionY.linearRampToValueAtTime(newY, rampTargetTime); // NEW: Automate Y position
+    state.pannerNode.positionX.linearRampToValueAtTime(newX, rampTime);
+    state.pannerNode.positionZ.linearRampToValueAtTime(newZ, rampTime);
+    // Y position remains unchanged by this automation
 
     // Update the store value so the UI reflects the change.
     store.update((s) => ({
         ...s,
-        pannerPosition: { ...s.pannerPosition, x: newX, z: newZ, y: newY } // NEW: Update Y in store
+        pannerPosition: { ...s.pannerPosition, x: newX, z: newZ }
     }));
-
-    // Schedule the next frame
-    pannerAutomationFrameId = requestAnimationFrame(pannerAutomationLoop);
 };
 
 const startPannerAutomation = () => {
-    if (pannerAutomationFrameId === null) {
-        console.log('AudioEffectsStore: Starting panner automation (requestAnimationFrame).');
-        const state = getCurrentState();
+    const state = getCurrentState();
+    // Only start if AudioContext is running AND automation is enabled
+    if (state.audioContext?.state !== 'running') {
+        // console.log('AudioEffectsStore: Not starting panner automation, AudioContext is not running.');
+        return;
+    }
+    if (!state.pannerAutomationEnabled) {
+        // console.log('AudioEffectsStore: Not starting panner automation, it is disabled.');
+        return;
+    }
+
+    if (pannerAutomationIntervalId === null) {
+        console.log('AudioEffectsStore: Starting panner automation.');
         // Before starting, cancel any previous manual settings to avoid conflicts
         if (state.pannerNode && state.audioContext) {
             const now = state.audioContext.currentTime;
             state.pannerNode.positionX.cancelScheduledValues(now);
             state.pannerNode.positionZ.cancelScheduledValues(now);
-            state.pannerNode.positionY.cancelScheduledValues(now); // NEW: Cancel Y values
-            // Re-initialize start time for the new automation cycle
-            pannerAutomationStartTime = null;
         }
-        // Start the requestAnimationFrame loop
-        pannerAutomationFrameId = requestAnimationFrame(pannerAutomationLoop);
+        pannerAutomationLoop(); // Run once immediately to set the initial position
+        pannerAutomationIntervalId = setInterval(pannerAutomationLoop, PANNER_AUTOMATION_INTERVAL_MS) as unknown as number;
     }
 };
 
 const stopPannerAutomation = () => {
-    if (pannerAutomationFrameId !== null) {
+    if (pannerAutomationIntervalId !== null) {
         console.log('AudioEffectsStore: Stopping panner automation.');
-        cancelAnimationFrame(pannerAutomationFrameId);
-        pannerAutomationFrameId = null;
-        pannerAutomationStartTime = null; // Reset start time for next activation
+        clearInterval(pannerAutomationIntervalId);
+        pannerAutomationIntervalId = null;
 
         const state = getCurrentState();
         // When stopping, cancel any pending ramps and set the panner to its last known position.
-        if (state.pannerNode && state.audioContext) {
+        // Only do this if context is not yet closed (during destroy) and pannerNode exists.
+        if (state.pannerNode && state.audioContext && state.audioContext.state !== 'closed') {
             const now = state.audioContext.currentTime;
             state.pannerNode.positionX.cancelScheduledValues(now);
             state.pannerNode.positionZ.cancelScheduledValues(now);
-            state.pannerNode.positionY.cancelScheduledValues(now); // NEW: Cancel Y values
             state.pannerNode.positionX.setValueAtTime(state.pannerPosition.x, now);
             state.pannerNode.positionZ.setValueAtTime(state.pannerPosition.z, now);
-            state.pannerNode.positionY.setValueAtTime(state.pannerPosition.y, now); // NEW: Set Y value
         }
     }
 };
 
-// NEW: Helper functions for AudioContext resume/suspend
-const resumeAudioContext = async (audioContext: AudioContext) => {
-    if (audioContext.state === 'suspended') {
-        console.log('AudioEffectsStore: Resuming AudioContext.');
-        await audioContext.resume();
-        // Re-evaluate all effects to ensure parameters are correct after resume
-        audioEffectsStore.updateAllEffects();
-        const state = getCurrentState();
-        if (state.pannerAutomationEnabled) {
-            startPannerAutomation(); // Restart RAF loop if it was active
-        }
-    }
+// NEW: Helper function to detect if it's likely a desktop environment
+const isDesktopDevice = () => {
+    if (typeof window === 'undefined') return false;
+    // Check for pointer: fine (mouse/trackpad) and hover: hover (not a touch-primary device)
+    // This is a strong heuristic for desktop-like environments.
+    return window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 };
 
-const suspendAudioContext = async (audioContext: AudioContext) => {
-    if (audioContext.state === 'running') {
-        console.log('AudioEffectsStore: Suspending AudioContext.');
-        await audioContext.suspend();
-        stopPannerAutomation(); // Stop automation when context is suspended
+// NEW: Function to handle visibility change for performance optimization
+const handleVisibilityChange = () => {
+    const state = getCurrentState();
+    if (!state.audioContext) return;
+
+    // We decide whether to suspend/resume AudioContext based on device type
+    const isDesktop = isDesktopDevice();
+
+    if (document.visibilityState === 'hidden') {
+        if (!isDesktop) {
+            // Page is hidden and it's a mobile-like device, suspend the AudioContext
+            if (state.audioContext.state === 'running') {
+                state.audioContext.suspend().then(() => {
+                    console.log('AudioEffectsStore: AudioContext suspended due to page hiding (mobile optimization).');
+                });
+            }
+            // On mobile-like, also stop panner automation to save resources
+            stopPannerAutomation();
+        } else {
+            console.log('AudioEffectsStore: Page hidden on desktop. AudioContext will remain running.');
+            // On desktop, the AudioContext remains running.
+            // Panner automation will continue if `pannerAutomationEnabled` is true
+            // because `updateAllEffects` will manage its lifecycle.
+        }
+    } else if (document.visibilityState === 'visible') {
+        // Page is visible, resume the AudioContext if it was suspended
+        if (state.audioContext.state === 'suspended') {
+            state.audioContext.resume().then(() => {
+                console.log('AudioEffectsStore: AudioContext resumed due to page becoming visible.');
+                // Reapply all effect settings after resuming context
+                audioEffectsStore.updateAllEffects();
+            });
+        } else {
+            // If context was already running (e.g., on desktop, or dev tools open, then close),
+            // just ensure all effects are updated (e.g., to restart automation if needed).
+            audioEffectsStore.updateAllEffects();
+        }
     }
 };
 
@@ -499,44 +472,11 @@ export const audioEffectsStore = {
         }
 
         const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        // Initial resume if suspended (e.g., due to autoplay policy)
         if (audioContext.state === 'suspended') {
-            await audioContext.resume(); // Initial resume on user gesture
+            await audioContext.resume();
         }
         console.log('AudioEffectsStore: AudioContext initialized. State:', audioContext.state);
-
-        // NEW: Add visibilitychange listener for AudioContext management
-        const handleVisibilityChange = async () => {
-            const currentState = getCurrentState();
-            if (!currentState.audioContext) return;
-
-            if (document.visibilityState === 'visible') {
-                await resumeAudioContext(currentState.audioContext);
-            } else if (document.visibilityState === 'hidden') {
-                await suspendAudioContext(currentState.audioContext);
-            }
-        };
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-
-        // NEW: Add pagehide listener to save settings and explicitly suspend
-        const handlePageHide = () => {
-            console.log('AudioEffectsStore: Saving settings and suspending AudioContext on page hide.');
-            audioEffectsStore.saveSettings(); // Ensure latest settings are saved
-            const currentState = getCurrentState();
-            if (currentState.audioContext) {
-                // Suspend explicitly to ensure consistency, though browsers often do this anyway.
-                // We don't await here as the page is being hidden/unloaded.
-                currentState.audioContext.suspend().catch(e => console.error('AudioEffectsStore: Error suspending context on pagehide:', e));
-            }
-            stopPannerAutomation(); // Ensure automation is stopped
-        };
-        window.addEventListener('pagehide', handlePageHide);
-
-        // Store these handlers to be able to remove them in `destroy`
-        store.update(s => ({
-            ...s,
-            _visibilityChangeHandler: handleVisibilityChange, // Store reference
-            _pageHideHandler: handlePageHide // Store reference
-        }));
 
         const sourceNode = audioContext.createMediaElementSource(audioElement);
         const masterGainNode = audioContext.createGain();
@@ -611,10 +551,7 @@ export const audioEffectsStore = {
         compressorNode.ratio.value = state.compressorRatio;
         compressorNode.attack.value = state.compressorAttack;
         compressorNode.release.value = state.compressorRelease;
-        // NEW: Create bypass nodes for the compressor for smooth cross-fading
-        const compressorInputGainNode = audioContext.createGain();
-        const compressorBypassGainNode = audioContext.createGain();
-        console.log('AudioEffectsStore: DynamicsCompressorNode and bypass nodes created.');
+        console.log('AudioEffectsStore: DynamicsCompressorNode created.');
 
         const pannerNode = audioContext.createPanner();
         // Use the HRTF model for high-quality binaural spatialization (best with headphones)
@@ -628,11 +565,11 @@ export const audioEffectsStore = {
         pannerNode.orientationZ.value = -1; // Face the listener
         console.log('AudioEffectsStore: PannerNode for spatial audio created.');
 
-        // NEW: Create cross-fader nodes for spatial audio bypass
+        // Create cross-fader nodes for spatial audio bypass
         const spatialWetGainNode = audioContext.createGain();
         const spatialBypassGainNode = audioContext.createGain();
 
-        // NEW: Add a master limiter at the end of the chain to prevent clipping
+        // Add a master limiter at the end of the chain to prevent clipping
         const masterLimiterNode = audioContext.createDynamicsCompressor();
         masterLimiterNode.threshold.value = -0.5; // Catch peaks just before 0dB
         masterLimiterNode.knee.value = 0; // Hard knee for true limiting
@@ -641,7 +578,7 @@ export const audioEffectsStore = {
         masterLimiterNode.release.value = 0.1; // Relatively fast release
         console.log('AudioEffectsStore: Master limiter created.');
 
-        // NEW: Loudness Normalization setup
+        // Loudness Normalization setup
         let loudnessNormalizationGainNode: GainNode | null = null;
         let loudnessMeterNode: AudioWorkletNode | null = null;
         try {
@@ -660,8 +597,8 @@ export const audioEffectsStore = {
                     // Update the store for UI feedback
                     store.update(s => ({ ...s, momentaryLoudness }));
 
-                    // If normalization is enabled, calculate and apply the gain adjustment
-                    if (currentState.loudnessNormalizationEnabled && currentState.loudnessNormalizationGainNode && currentState.audioContext) {
+                    // If normalization is enabled and audioContext is running, calculate and apply the gain adjustment
+                    if (currentState.loudnessNormalizationEnabled && currentState.loudnessNormalizationGainNode && currentState.audioContext && currentState.audioContext.state === 'running') {
                         const targetLufs = currentState.loudnessTarget;
                         const errorDb = targetLufs - momentaryLoudness;
 
@@ -690,12 +627,11 @@ export const audioEffectsStore = {
             convolverNode, convolverDryGainNode, convolverWetGainNode, convolverBoostGainNode,
             genericReverbPreDelayNode, genericReverbOutputGain, combMergerNode,
             combFilters, allPassFilters, reverbLFOs, reverbModGains, compressorNode,
-            compressorInputGainNode, compressorBypassGainNode, // Add new compressor nodes to store
             pannerNode,
             spatialWetGainNode, spatialBypassGainNode,
-            // NEW: Add loudness nodes to store
+            // Add loudness nodes to store
             loudnessNormalizationGainNode, loudnessMeterNode,
-            // NEW: Add limiter node to store
+            // Add limiter node to store
             masterLimiterNode
         });
         console.log('AudioEffectsStore: Store updated with new audio nodes.');
@@ -703,9 +639,13 @@ export const audioEffectsStore = {
         audioEffectsStore.setupAudioGraph();
         console.log('AudioEffectsStore: Audio graph connections established.');
 
-        // If automation was enabled from localStorage, start it now.
-        if (getCurrentState().pannerAutomationEnabled) {
-            startPannerAutomation();
+        // Add visibility change listener for performance optimization
+        if (typeof document !== 'undefined') {
+            visibilityChangeListener = handleVisibilityChange; // Store reference
+            document.addEventListener('visibilitychange', visibilityChangeListener);
+            // Call it once to set initial state correctly based on current visibility
+            // This is crucial to suspend AC if app starts in background (e.g., tab opened in background on mobile)
+            handleVisibilityChange();
         }
 
         await audioEffectsStore.fetchAvailableIrs();
@@ -720,28 +660,29 @@ export const audioEffectsStore = {
      */
     destroy: () => {
         const state = getCurrentState();
+        // Close AudioContext first
         if (state.audioContext) {
             state.audioContext.close().then(() => {
                 console.log('AudioEffectsStore: AudioContext closed.');
             }).catch(e => console.error('AudioEffectsStore: Error closing AudioContext:', e));
         }
-        // NEW: Remove event listeners
-        if (state._visibilityChangeHandler) {
-            document.removeEventListener('visibilitychange', state._visibilityChangeHandler as EventListener);
-        }
-        if (state._pageHideHandler) {
-            window.removeEventListener('pagehide', state._pageHideHandler as EventListener);
+
+        // Stop all LFOs explicitly on destroy to free up resources
+        state.reverbLFOs.forEach(lfo => {
+            try {
+                lfo.stop();
+            } catch (e) {
+                console.warn('AudioEffectsStore: Error stopping LFO, might already be stopped:', e);
+            }
+        });
+        stopPannerAutomation(); // Ensure automation loop is stopped on destroy
+
+        // Remove visibility change listener on destroy
+        if (typeof document !== 'undefined' && visibilityChangeListener) {
+            document.removeEventListener('visibilitychange', visibilityChangeListener);
+            visibilityChangeListener = null;
         }
 
-        // LFOs are stopped when AudioContext is closed, no need for manual stop or error handling
-        // state.reverbLFOs.forEach(lfo => {
-        //     try {
-        //         lfo.stop();
-        //     } catch (e) {
-        //         console.warn('AudioEffectsStore: Error stopping LFO, might already be stopped:', e);
-        //     }
-        // });
-        stopPannerAutomation(); // Ensure automation loop is stopped on destroy
         store.set(initialAudioEffectsState); // Reset to initial state
         console.log('AudioEffectsStore: Store reset.');
     },
@@ -757,16 +698,13 @@ export const audioEffectsStore = {
             !s.convolverNode || !s.genericReverbPreDelayNode || !s.convolverDryGainNode ||
             !s.convolverWetGainNode || !s.genericReverbOutputGain || !s.combMergerNode ||
             !s.combFilters.length || !s.allPassFilters.length || !s.convolverBoostGainNode ||
-            !s.reverbLFOs.length || !s.reverbModGains.length || !s.compressorNode ||
-            !s.compressorInputGainNode || !s.compressorBypassGainNode || // Check for new compressor nodes
-            !s.pannerNode || !s.spatialWetGainNode || !s.spatialBypassGainNode || // Check for new spatial nodes
-            !s.loudnessNormalizationGainNode || !s.loudnessMeterNode || // NEW: Check loudness nodes
-            !s.masterLimiterNode) { // NEW: Check limiter node
+            !s.reverbLFOs.length || !s.reverbModGains.length || !s.compressorNode || !s.pannerNode ||
+            !s.spatialWetGainNode || !s.spatialBypassGainNode || // Check for new spatial nodes
+            !s.loudnessNormalizationGainNode || !s.loudnessMeterNode || // Check loudness nodes
+            !s.masterLimiterNode) { // Check limiter node
             console.error('AudioEffectsStore: Cannot setup audio graph, some required nodes are null/missing.');
             return;
         }
-
-        // --- Audio Graph Signal Flow ---
 
         // 1. Source -> EQ Chain
         let eqOutput: AudioNode = s.sourceNode;
@@ -775,24 +713,22 @@ export const audioEffectsStore = {
             for (let i = 0; i < s.filterNodes.length - 1; i++) {
                 s.filterNodes[i].connect(s.filterNodes[i + 1]);
             }
-            eqOutput = s.filterNodes[s.filterNodes.length - 1];
+            eqOutput = s.filterNodes[s.filterNodes.length - 1]; // Output of EQ chain
         }
 
-        // 2. EQ Output -> Parallel Effects (Convolution Reverb, Generic Reverb)
-        // The main dry signal path for the convolver
-        eqOutput.connect(s.convolverDryGainNode);
-        // The wet signal path for the convolver
-        eqOutput.connect(s.convolverNode);
-        s.convolverNode.connect(s.convolverWetGainNode);
-        s.convolverWetGainNode.connect(s.convolverBoostGainNode);
-        // The input for the generic reverb
-        eqOutput.connect(s.genericReverbPreDelayNode);
+        // 2. EQ Chain Output -> Split into parallel effect paths
+        eqOutput.connect(s.convolverDryGainNode);   // Dry path for convolver mix
+        eqOutput.connect(s.convolverNode);          // Wet path for convolver
+        eqOutput.connect(s.genericReverbPreDelayNode); // Input for generic reverb starts with pre-delay
 
-        // 3. Generic Reverb internal routing
-        s.genericReverbPreDelayNode.connect(s.combMergerNode);
-        for (const comb of s.combFilters) {
+        // 3. Set up Generic Reverb Routing (this part is internal to the reverb and doesn't change)
+        s.genericReverbPreDelayNode.connect(s.combMergerNode); // Connect to comb merger directly for early reflections
+        for (let i = 0; i < s.combFilters.length; i++) {
+            const comb = s.combFilters[i];
             s.genericReverbPreDelayNode.connect(comb.delay);
-            comb.delay.connect(comb.feedback).connect(comb.filter).connect(comb.delay);
+            comb.delay.connect(comb.feedback);
+            comb.feedback.connect(comb.filter);
+            comb.filter.connect(comb.delay);
             comb.delay.connect(s.combMergerNode);
         }
         s.combMergerNode.connect(s.allPassFilters[0]);
@@ -801,42 +737,43 @@ export const audioEffectsStore = {
         }
         s.allPassFilters[s.allPassFilters.length - 1].connect(s.genericReverbOutputGain);
 
-        // 4. Sum all parallel paths into a single bus before the compressor stage.
-        const effectsSummingBus = s.audioContext.createGain();
-        s.convolverDryGainNode.connect(effectsSummingBus);
-        s.convolverBoostGainNode.connect(effectsSummingBus); // Convolver wet (boosted)
-        s.genericReverbOutputGain.connect(effectsSummingBus); // Generic reverb wet
+        // 4. Convolver wet path setup
+        s.convolverNode.connect(s.convolverWetGainNode);
+        // The boost node is now correctly placed here to only affect the convolver's wet signal
+        s.convolverWetGainNode.connect(s.convolverBoostGainNode);
 
-        // 5. Compressor Stage (with cross-fade bypass)
-        // The signal splits to go through the compressor or bypass it.
-        effectsSummingBus.connect(s.compressorNode);
-        s.compressorNode.connect(s.compressorInputGainNode); // Wet path (compressed)
-        effectsSummingBus.connect(s.compressorBypassGainNode); // Dry path (bypass)
+        // 5. All Effect Paths -> Sum at the Compressor
 
-        // 6. Merge compressor and bypass paths into a new bus.
-        const postCompressorBus = s.audioContext.createGain();
-        s.compressorInputGainNode.connect(postCompressorBus);
-        s.compressorBypassGainNode.connect(postCompressorBus);
+        // NOTE: If convolver and generic reverb are OFF, these dry/wet gains should ensure no signal passes.
+        // If a signal should ALWAYS pass through the compressor from the EQ output regardless of effects,
+        // then eqOutput.connect(s.compressorNode) should be added directly here.
+        // For now, assuming effects *always* funnel into the compressor.
+        s.convolverDryGainNode.connect(s.compressorNode);
+        s.convolverBoostGainNode.connect(s.compressorNode); // Connect the boosted wet path
+        s.genericReverbOutputGain.connect(s.compressorNode);
 
-        // 7. Post-Compressor Chain: Spatial Audio -> Loudness -> Analyser -> Master Limiter -> Destination
-        // The loudness meter is connected in parallel to measure the output of this stage.
-        postCompressorBus.connect(s.loudnessMeterNode);
+        // 6. Post-Processing Chain: Compressor -> Spatial Audio Cross-fader -> Loudness -> Analyser -> Master
+
+        // The loudness meter is always connected in parallel after the compressor to measure its output
+        s.compressorNode.connect(s.loudnessMeterNode);
 
         // --- Spatial Audio Cross-fader setup ---
-        // The post-compressor output splits into two parallel paths.
+        // The compressor output splits into two parallel paths that will be cross-faded.
         // Path 1: The "wet" signal with spatialization
-        postCompressorBus.connect(s.pannerNode);
+        s.compressorNode.connect(s.pannerNode);
         s.pannerNode.connect(s.spatialWetGainNode);
         s.spatialWetGainNode.connect(s.loudnessNormalizationGainNode);
 
         // Path 2: The "dry" (bypass) signal
-        postCompressorBus.connect(s.spatialBypassGainNode);
+        s.compressorNode.connect(s.spatialBypassGainNode);
         s.spatialBypassGainNode.connect(s.loudnessNormalizationGainNode);
         // --- End Cross-fader ---
 
-        // The two spatial paths merge at the loudnessNormalizationGainNode, which continues the chain.
+        // The two paths merge at the loudnessNormalizationGainNode, which then continues the chain.
         s.loudnessNormalizationGainNode.connect(s.analyserNode);
+        // The convolverBoostGainNode has been moved to the convolver's wet path to prevent it from boosting the entire mix.
         s.analyserNode.connect(s.masterGainNode);
+        // The masterGainNode now goes to a final limiter to prevent any clipping.
         s.masterGainNode.connect(s.masterLimiterNode);
         s.masterLimiterNode.connect(s.audioContext.destination);
     },
@@ -851,10 +788,25 @@ export const audioEffectsStore = {
         updateConvolver(state);
         updateGenericReverb(state);
         updateCompressor(state);
-        updatePanner(state);
+        updatePanner(state); // Update panner manual values, automation is separate
         updateSpatialAudioFade(state);
-        updateLoudnessNormalization(state); // NEW: Update loudness normalization state
-        debouncedSaveToLocalStorage(state); // Save settings after all effects are updated
+        updateLoudnessNormalization(state);
+
+        // Manage panner automation:
+        // - Always stop if disabled by user or if context is closing
+        // - Start/continue if enabled AND (on desktop OR (on mobile AND visible))
+        const isDesktop = isDesktopDevice();
+        const shouldRunAutomation = state.pannerAutomationEnabled &&
+                                     state.audioContext?.state === 'running' && // Only run if context is actually running
+                                     (isDesktop || document.visibilityState === 'visible'); // On desktop, run always; on mobile, only if visible
+
+        if (shouldRunAutomation) {
+            startPannerAutomation();
+        } else {
+            stopPannerAutomation();
+        }
+
+        saveToLocalStorage(state); // Save settings after all effects are updated
     },
 
     /**
@@ -1010,9 +962,9 @@ export const audioEffectsStore = {
                 genericReverbPreDelay: p.preDelay,
                 genericReverbType: type,
                 genericReverbModulationRate: p.modulationRate,
-                genericReverbModulationDepth: p.modulationDepth
-                // Note: We no longer overwrite `genericReverbCustomSettings` here.
-                // This preserves the user's custom tweaks when they try out other presets.
+                genericReverbModulationDepth: p.modulationDepth,
+                // If switching from custom, copy preset values into custom settings as well
+                genericReverbCustomSettings: type === 'custom' ? s.genericReverbCustomSettings : { ...p }
             };
         });
         audioEffectsStore.updateAllEffects(); // Ensure overall state and node parameters are updated
@@ -1050,31 +1002,15 @@ export const audioEffectsStore = {
             // Do not allow manual control if automation is enabled
             if (s.pannerAutomationEnabled) return s;
             const newPos = { ...s.pannerPosition, ...position };
-            // NEW: Use linearRampToValueAtTime for smoother manual updates
-            if (s.pannerNode && s.audioContext) {
-                const now = s.audioContext.currentTime;
-                const rampDuration = 0.02; // 20ms ramp for smoothness
-                const rampTargetTime = now + rampDuration;
-                s.pannerNode.positionX.linearRampToValueAtTime(newPos.x, rampTargetTime);
-                s.pannerNode.positionY.linearRampToValueAtTime(newPos.y, rampTargetTime);
-                s.pannerNode.positionZ.linearRampToValueAtTime(newPos.z, rampTargetTime);
-            }
             return { ...s, pannerPosition: newPos };
         });
         audioEffectsStore.updateAllEffects();
     },
     togglePannerAutomation: (enabled: boolean) => {
         store.update(s => ({ ...s, pannerAutomationEnabled: enabled }));
-        if (enabled) {
-            startPannerAutomation();
-        } else {
-            stopPannerAutomation();
-            // Reset position to center for a predictable state when turning off automation.
-            audioEffectsStore.setPannerPosition({ x: 0, y: 0, z: 0 }); // This will call updateAllEffects and saveSettings
-        }
-        // Removed direct saveSettings call here, as setPannerPosition already calls updateAllEffects,
-        // which then triggers the debounced save. A direct save also happens on pagehide.
-        // audioEffectsStore.saveSettings();
+        // Call updateAllEffects to manage starting/stopping automation based on new state and visibility
+        audioEffectsStore.updateAllEffects();
+        audioEffectsStore.saveSettings();
     },
     setPannerAutomationRate: (rate: number) => {
         store.update(s => ({ ...s, pannerAutomationRate: rate }));
@@ -1100,18 +1036,11 @@ export const audioEffectsStore = {
      * Sets the master volume of the entire audio graph.
      * This is called by Player.svelte when the playerStore's volume changes.
      * @param volume The new master volume (0-1).
-     * @param fadeDurationSec The duration over which to fade the volume in seconds. Defaults to 0.1s.
      */
-    setMasterVolume: (volume: number, fadeDurationSec: number = 0.1) => { // Default to 100ms fade
+    setMasterVolume: (volume: number) => {
         const s = getCurrentState();
-        if (s.masterGainNode && s.audioContext) {
-            const now = s.audioContext.currentTime;
-            // Cancel any actively scheduled automations for gain to prevent conflicts
-            s.masterGainNode.gain.cancelScheduledValues(now);
-            // Apply a linear ramp to the new volume
-            // Ensure a minimum duration to avoid instant setValueAtTime clicks
-            const actualFadeDuration = Math.max(0.01, fadeDurationSec); // Minimum 10ms for smooth ramps
-            s.masterGainNode.gain.linearRampToValueAtTime(volume, now + actualFadeDuration);
+        if (s.masterGainNode) {
+            s.masterGainNode.gain.value = volume;
         }
     },
 

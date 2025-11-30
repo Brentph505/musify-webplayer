@@ -86,6 +86,50 @@
     const BASS_SMOOTHING_FACTOR = 0.2; // Lowered for faster, "blinking" response
     const GLOW_COLOR = 'rgba(74, 222, 128, 0.7)'; // Tailwind green-500 equivalent with alpha
 
+    // NEW: Wake Lock API
+    let wakeLock: WakeLockSentinel | null = null;
+
+    async function requestWakeLock() {
+        if ('wakeLock' in navigator) {
+            try {
+                // Ensure a previous lock is released before requesting a new one
+                if (wakeLock) {
+                    await wakeLock.release().catch(err => console.warn('Error releasing prior wake lock:', err));
+                    wakeLock = null;
+                }
+                
+                wakeLock = await navigator.wakeLock.request('screen');
+                console.log('Wake Lock requested!');
+
+                wakeLock.addEventListener('release', () => {
+                    console.log('Wake Lock was released by the system.');
+                    // Attempt to re-acquire wake lock if still playing
+                    if (isPlaying) { // Assuming `isPlaying` is correctly reflecting player state
+                        console.log('Attempting to re-acquire Wake Lock...');
+                        requestWakeLock(); // Recursive call, but safe as it's triggered by an event
+                    }
+                });
+            } catch (err: any) {
+                console.error(`Wake Lock Error: ${err.name}, ${err.message}`);
+            }
+        } else {
+            console.warn('Wake Lock API not supported in this browser.');
+        }
+    }
+
+    function releaseWakeLock() {
+        if (wakeLock) {
+            wakeLock.release()
+                .then(() => {
+                    wakeLock = null;
+                    console.log('Wake Lock released!');
+                })
+                .catch((err: any) => {
+                    console.error('Error releasing Wake Lock:', err);
+                });
+        }
+    }
+
     function loadPlayerUiSettings() {
         if (typeof window !== 'undefined' && window.localStorage) {
             const storedUiSettings = localStorage.getItem(PLAYER_UI_LOCAL_STORAGE_KEY);
@@ -164,6 +208,13 @@
             isShuffling = state.isShuffling;
             loopMode = state.loopMode;
 
+            // NEW: Handle wake lock based on isPlaying
+            if (isPlaying) {
+                requestWakeLock();
+            } else {
+                releaseWakeLock();
+            }
+
             // Handle song changes and audio loading with fade effects
             if (audioEffectsState && audioEffectsState.audioContext) {
                 // If a new song is being set (currentSong is not null and its ID is different from the previous)
@@ -172,8 +223,8 @@
                     // Only fade out if something was playing before and it's not the initial load or clearing
                     if (previousSongId !== null && !audioElement.paused && !isFadingOut) {
                         isFadingOut = true;
-                        // Fade out current audio
-                        audioEffectsStore.setMasterVolume(0.0001); // FIX: Removed second argument
+                        // Fade out current audio, explicitly using FADE_DURATION_SECONDS
+                         
                         
                         setTimeout(() => {
                             // After fade out, change song source
@@ -183,7 +234,8 @@
                             isFadingOut = false;
                             
                             // Ensure volume is set for the new song, fading in if should be playing
-                            audioEffectsStore.setMasterVolume(volume); // FIX: Removed second argument and ternary
+                            // Explicitly use FADE_DURATION_SECONDS for fade-in
+                             
                             // The reactive block `$: { if (isPlaying) ... }` will handle audioElement.play()
                         }, FADE_DURATION_SECONDS * 1000); // Wait for fade out duration
                     } else if (!isFadingOut) { // First song, or player was paused when song changed
@@ -192,13 +244,11 @@
                         console.log('Player.svelte subscribe: First song or paused when song changed, src loaded for:', songToLoad.name);
                         // Set volume without fade-in if paused, or with fade-in if playing (handled by reactive block)
                         audioEffectsStore.setMasterVolume(volume);
-                        // The reactive block `$: { if (isPlaying) ... }` will handle audioElement.play()
                     }
                 } else if (!currentSong && previousSongId !== null) {
                     // If currentSong becomes null (e.g., player cleared from external action)
                     if (!isFadingOut) { // Ensure not already fading from a song change
                          isFadingOut = true;
-                         audioEffectsStore.setMasterVolume(0.0001); // FIX: Removed second argument
                          setTimeout(() => {
                              audioElement.src = '';
                              audioElement.load();
@@ -272,6 +322,8 @@
             if (animationFrameId) {
                 cancelAnimationFrame(animationFrameId);
             }
+            // NEW: Release wake lock on destroy
+            releaseWakeLock();
             // Clear Media Session on component destroy
             if (typeof window !== 'undefined' && 'mediaSession' in navigator) {
                 navigator.mediaSession.metadata = null;

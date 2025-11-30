@@ -639,7 +639,7 @@
     .title {
         margin: 0 0 12px 0;
         text-align: center;
-        font-size: 1.2em; /* Made smaller for desktop */
+        font--size: 1.2em; /* Made smaller for desktop */
         color: #1DB954;
         display: flex;
         align-items: center;
