@@ -524,6 +524,42 @@ const ensureStartReverbLFOs = () => {
     reverbLFOsStarted = true;
 };
 
+// NEW: Lazily create/load loudness worklet & meter only when user enables loudness normalization.
+// This avoids the AudioWorklet.setup cost at cold start.
+const ensureLoudnessWorklet = async (): Promise<void> => {
+    const s = getCurrentState();
+    if (!s.audioContext) return;
+    if (s.loudnessMeterNode) return; // already created
+
+    try {
+        await s.audioContext.audioWorklet.addModule('/lufs-meter-processor.js');
+        const meter = new AudioWorkletNode(s.audioContext, 'lufs-meter-processor');
+
+        meter.port.onmessage = (event) => {
+            if (event.data.type === 'momentaryLoudness') {
+                const momentaryLoudness = event.data.value;
+                // Update UI and apply normalization if enabled
+                const currentState = getCurrentState();
+                store.update(st => ({ ...st, momentaryLoudness }));
+
+                if (currentState.loudnessNormalizationEnabled && currentState.loudnessNormalizationGainNode && currentState.audioContext && currentState.audioContext.state === 'running') {
+                    const targetLufs = currentState.loudnessTarget;
+                    const errorDb = targetLufs - momentaryLoudness;
+                    const limitedErrorDb = Math.max(-12, Math.min(6, errorDb));
+                    const targetGain = Math.pow(10, limitedErrorDb / 20);
+                    currentState.loudnessNormalizationGainNode.gain.linearRampToValueAtTime(targetGain, currentState.audioContext.currentTime + 0.3);
+                }
+            }
+        };
+
+        // store the meter node
+        store.update(st => ({ ...st, loudnessMeterNode: meter }));
+        console.log('AudioEffectsStore: Loudness AudioWorklet created lazily.');
+    } catch (e) {
+        console.error('AudioEffectsStore: Failed to load lufs-meter-processor.js lazily:', e);
+    }
+};
+
 // ---------------------------
 // Public API for the audio effects store
 // ---------------------------
@@ -540,29 +576,22 @@ export const audioEffectsStore = {
     init: async (audioElement: HTMLAudioElement, initialVolume: number) => {
         const state = getCurrentState();
         if (state.audioContext) {
-            console.warn('AudioEffectsStore: AudioContext already initialized.');
+            console.warn('AudioEffectsStore: AudioContext already initialized.' );
             return;
         }
 
-        // Use 'playback' latency hint to optimize for power consumption on mobile/laptops.
         const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
             latencyHint: 'playback'
         });
-        // Initial resume if suspended (e.g., due to autoplay policy)
         if (audioContext.state === 'suspended') {
             await audioContext.resume();
         }
-        console.log(`AudioEffectsStore: AudioContext initialized. State: ${audioContext.state}, ` +
-                    `Sample Rate: ${audioContext.sampleRate} Hz, ` +
-                    `Base Latency: ${audioContext.baseLatency * 1000} ms.`);
-
 
         const sourceNode = audioContext.createMediaElementSource(audioElement);
         const masterGainNode = audioContext.createGain();
         masterGainNode.gain.value = initialVolume;
         const analyserNode = audioContext.createAnalyser();
         analyserNode.fftSize = 256;
-        console.log('AudioEffectsStore: Core nodes (source, masterGain, analyser) created.');
 
         const filterNodes = initialEqBands.map((band, i) => {
             const f = audioContext.createBiquadFilter();
@@ -572,17 +601,22 @@ export const audioEffectsStore = {
             f.gain.value = state.eqGains[i];
             return f;
         });
-        console.log('AudioEffectsStore: EQ filter nodes created.');
 
+        // Convolver nodes (node itself is lightweight; decoding IR is deferred)
         const convolverNode = audioContext.createConvolver();
         const convolverDryGainNode = audioContext.createGain();
         const convolverWetGainNode = audioContext.createGain();
         const convolverBoostGainNode = audioContext.createGain();
+        // Safe defaults to avoid initial bursts
+        convolverDryGainNode.gain.value = 1;
+        convolverWetGainNode.gain.value = 0;
         convolverBoostGainNode.gain.value = 1;
-        console.log('AudioEffectsStore: Convolver and its Dry/Wet GainNodes created.');
 
+        // Generic reverb nodes (comb feedbacks initially zero -> safe)
         const genericReverbPreDelayNode = audioContext.createDelay(0.5);
         const genericReverbOutputGain = audioContext.createGain();
+        genericReverbOutputGain.gain.value = 0; // bypass by default
+
         const combMergerNode = audioContext.createGain();
         combMergerNode.gain.value = 1 / 4;
 
@@ -604,16 +638,10 @@ export const audioEffectsStore = {
             const lfo = audioContext.createOscillator();
             lfo.type = 'sine';
             lfo.frequency.value = lfoFrequencies[i];
-            // NOTE: do NOT start() LFOs here to avoid unnecessary CPU at init.
-            // They will be started lazily when the generic reverb is first enabled.
-
             const modGain = audioContext.createGain();
-            modGain.gain.value = 0; // SAFETY: start modulation gain at 0 until reverb is enabled
-
+            modGain.gain.value = 0; // start modulation gain at 0 until reverb enabled
             lfo.connect(modGain);
-            // Connect LFO -> ModGain -> DelayTime AudioParam for modulation
             modGain.connect(combFilters[i].delay.delayTime);
-
             reverbLFOs.push(lfo);
             reverbModGains.push(modGain);
         }
@@ -624,7 +652,6 @@ export const audioEffectsStore = {
             ap.frequency.value = freq;
             return ap;
         });
-        console.log('AudioEffectsStore: Generic Reverb (Freeverb-style with modulation) nodes created.');
 
         const compressorNode = audioContext.createDynamicsCompressor();
         compressorNode.threshold.value = state.compressorThreshold;
@@ -632,86 +659,44 @@ export const audioEffectsStore = {
         compressorNode.ratio.value = state.compressorRatio;
         compressorNode.attack.value = state.compressorAttack;
         compressorNode.release.value = state.compressorRelease;
-        console.log('AudioEffectsStore: DynamicsCompressorNode created.');
 
         const pannerNode = audioContext.createPanner();
-        // Use the HRTF model for high-quality binaural spatialization (best with headphones).
         pannerNode.panningModel = 'HRTF';
-        pannerNode.distanceModel = 'inverse'; // More realistic distance falloff
+        pannerNode.distanceModel = 'inverse';
         pannerNode.positionX.value = state.pannerPosition.x;
         pannerNode.positionY.value = state.pannerPosition.y;
         pannerNode.positionZ.value = state.pannerPosition.z;
         pannerNode.orientationX.value = 0;
         pannerNode.orientationY.value = 0;
-        pannerNode.orientationZ.value = -1; // Face the listener
-        console.log('AudioEffectsStore: PannerNode for spatial audio created.');
+        pannerNode.orientationZ.value = -1;
 
-        // Create cross-fader nodes for spatial audio bypass
         const spatialWetGainNode = audioContext.createGain();
         const spatialBypassGainNode = audioContext.createGain();
 
-        // NEW: Stereo Widening Nodes
+        // Stereo widener nodes (lightweight)
         const stereoWidenerBypassGainNode = audioContext.createGain();
         const stereoWidenerWetGainNode = audioContext.createGain();
-        const stereoWidenerSplitterNode = audioContext.createChannelSplitter(2); // Split into 2 channels
-        const stereoWidenerDelayLNode = audioContext.createDelay(0.020); // Max 20ms delay
-        const stereoWidenerDelayRNode = audioContext.createDelay(0.020); // Max 20ms delay
-        stereoWidenerDelayLNode.delayTime.value = 0.010; // 10ms default delay for left
-        stereoWidenerDelayRNode.delayTime.value = 0.020; // 20ms default delay for right
-        const stereoWidenerMergerNode = audioContext.createChannelMerger(2); // Merge back to 2 channels
-        console.log('AudioEffectsStore: Stereo Widening nodes created.');
+        const stereoWidenerSplitterNode = audioContext.createChannelSplitter(2);
+        const stereoWidenerDelayLNode = audioContext.createDelay(0.020);
+        const stereoWidenerDelayRNode = audioContext.createDelay(0.020);
+        stereoWidenerDelayLNode.delayTime.value = 0.010;
+        stereoWidenerDelayRNode.delayTime.value = 0.020;
+        const stereoWidenerMergerNode = audioContext.createChannelMerger(2);
+        // safe defaults for widener
+        stereoWidenerBypassGainNode.gain.value = 1;
+        stereoWidenerWetGainNode.gain.value = 0;
 
-        // Add a master limiter at the end of the chain to prevent clipping
         const masterLimiterNode = audioContext.createDynamicsCompressor();
-        masterLimiterNode.threshold.value = -0.5; // Catch peaks just before 0dB
-        masterLimiterNode.knee.value = 0; // Hard knee for true limiting
-        masterLimiterNode.ratio.value = 20; // High ratio
-        masterLimiterNode.attack.value = 0.001; // Fast attack
-        masterLimiterNode.release.value = 0.1; // Relatively fast release
-        console.log('AudioEffectsStore: Master limiter created.');
+        masterLimiterNode.threshold.value = -0.5;
+        masterLimiterNode.knee.value = 0;
+        masterLimiterNode.ratio.value = 20;
+        masterLimiterNode.attack.value = 0.001;
+        masterLimiterNode.release.value = 0.1;
 
-        // Loudness Normalization setup
-        let loudnessNormalizationGainNode: GainNode | null = null;
-        let loudnessMeterNode: AudioWorkletNode | null = null;
-        try {
-            // Load the processor, create the gain node for applying adjustments,
-            // and the worklet node for measuring loudness.
-            await audioContext.audioWorklet.addModule('/lufs-meter-processor.js');
-            loudnessNormalizationGainNode = audioContext.createGain();
-            loudnessMeterNode = new AudioWorkletNode(audioContext, 'lufs-meter-processor');
-
-            // Set up the listener for messages from the worklet
-            loudnessMeterNode.port.onmessage = (event) => {
-                if (event.data.type === 'momentaryLoudness') {
-                    const momentaryLoudness = event.data.value;
-                    const currentState = getCurrentState();
-
-                    // Update the store for UI feedback
-                    store.update(s => ({ ...s, momentaryLoudness }));
-
-                    // If normalization is enabled and audioContext is running, calculate and apply the gain adjustment
-                    if (currentState.loudnessNormalizationEnabled && currentState.loudnessNormalizationGainNode && currentState.audioContext && currentState.audioContext.state === 'running') {
-                        const targetLufs = currentState.loudnessTarget;
-                        const errorDb = targetLufs - momentaryLoudness;
-
-                        // Apply a simple limiter to prevent extreme gain changes
-                        // Cap positive gain at +6dB to prevent distortion, but allow larger cuts.
-                        const limitedErrorDb = Math.max(-12, Math.min(6, errorDb));
-
-                        const targetGain = Math.pow(10, limitedErrorDb / 20);
-
-                        // Smoothly ramp to the new target gain to avoid artifacts
-                        currentState.loudnessNormalizationGainNode.gain.linearRampToValueAtTime(
-                            targetGain,
-                            currentState.audioContext.currentTime + 0.3 // Ramp over 300ms
-                        );
-                    }
-                }
-            };
-            console.log('AudioEffectsStore: Loudness meter and normalization nodes created.');
-        } catch (e) {
-            console.error('AudioEffectsStore: Failed to load or create loudness meter AudioWorklet.', e);
-        }
+        // Loudness normalization: create the gain node now (very cheap), defer AudioWorklet creation.
+        const loudnessNormalizationGainNode = audioContext.createGain();
+        loudnessNormalizationGainNode.gain.value = 1;
+        // loudnessMeterNode will be created lazily by ensureLoudnessWorklet()
 
         store.set({
             ...state,
@@ -721,24 +706,18 @@ export const audioEffectsStore = {
             combFilters, allPassFilters, reverbLFOs, reverbModGains, compressorNode,
             pannerNode,
             spatialWetGainNode, spatialBypassGainNode,
-            // Add Stereo Widening nodes to store
             stereoWidenerBypassGainNode, stereoWidenerWetGainNode,
             stereoWidenerSplitterNode, stereoWidenerDelayLNode, stereoWidenerDelayRNode, stereoWidenerMergerNode,
-            // Add loudness nodes to store
-            loudnessNormalizationGainNode, loudnessMeterNode,
-            // Add limiter node to store
+            loudnessNormalizationGainNode, loudnessMeterNode: null,
             masterLimiterNode,
         });
-        console.log('AudioEffectsStore: Store updated with new audio nodes.');
 
         audioEffectsStore.setupAudioGraph();
-        console.log('AudioEffectsStore: Audio graph connections established.');
 
+        // Fetch available IRs but DO NOT auto-load/decode them at init — load only when convolver enabled.
         await audioEffectsStore.fetchAvailableIrs();
-        await audioEffectsStore.loadImpulseResponse(getCurrentState().selectedIrUrl);
         audioEffectsStore.configureGenericReverb(getCurrentState().genericReverbType);
-        audioEffectsStore.updateAllEffects(); // Final update to set all gains/states based on loaded settings
-        console.log('AudioEffectsStore: Initialization complete.');
+        audioEffectsStore.updateAllEffects();
     },
 
     /**
@@ -927,29 +906,36 @@ export const audioEffectsStore = {
      */
     destroy: () => {
         const state = getCurrentState();
-        // Close AudioContext first
+        
+        // Stop all audio nodes gracefully
         if (state.audioContext) {
-            state.audioContext.close().then(() => {
-                console.log('AudioEffectsStore: AudioContext closed.' );
-            }).catch(e => console.error('AudioEffectsStore: Error closing AudioContext:', e));
+            // Stop all oscillators first
+            state.reverbLFOs.forEach(osc => {
+                try { osc.stop(); } catch (e) {}
+            });
+            
+            // Disconnect all nodes
+            if (state.sourceNode) state.sourceNode.disconnect();
+            if (state.masterGainNode) state.masterGainNode.disconnect();
+            if (state.analyserNode) state.analyserNode.disconnect();
+            if (state.compressorNode) state.compressorNode.disconnect();
+            if (state.masterLimiterNode) state.masterLimiterNode.disconnect();
+            
+            // Close the context
+            state.audioContext.close();
         }
-
-        // Stop all LFOs explicitly on destroy to free up resources
-        // Only stop if they were actually started
+        
+        stopPannerAutomation();
+        
         if (reverbLFOsStarted) {
-            state.reverbLFOs.forEach(lfo => {
-                try {
-                    lfo.stop();
-                } catch (e) {
-                    console.warn('AudioEffectsStore: Error stopping LFO, might already be stopped:', e);
-                }
+            state.reverbLFOs.forEach(osc => {
+                try { osc.stop(); } catch (e) {}
             });
             reverbLFOsStarted = false;
         }
-        stopPannerAutomation(); // Ensure automation loop is stopped on destroy
-
-        store.set(initialAudioEffectsState); // Reset to initial state
-        console.log('AudioEffectsStore: Store reset.');
+        
+        store.set(initialAudioEffectsState);
+        console.log('AudioEffectsStore: Cleaned up and reset.');
     },
 
     /**
@@ -1143,205 +1129,91 @@ export const audioEffectsStore = {
     },
 
     // --- Convolver (IR Reverb) Management ---
-    toggleConvolver: (enabled: boolean) => {
-        store.update(s => ({ ...s, convolverEnabled: enabled }));
-        audioEffectsStore.updateAllEffects();
+    fetchAvailableIrs: async () => {
+        if (typeof window === 'undefined') return;
+        try {
+            const response = await fetch('/api/irs');
+            if (!response.ok) throw new Error('Failed to fetch IR list');
+            const newIrs: string[] = await response.json();
+            store.update(s => {
+                // Do not eagerly load/decode IR here; only set availability and preserve selectedUrl if present.
+                if (s.selectedIrUrl && !newIrs.includes(s.selectedIrUrl)) {
+                     console.warn(`AudioEffectsStore: Stored IR URL (${s.selectedIrUrl}) not found in available IRs. Clearing selection.`);
+                     s.selectedIrUrl = null;
+                } else if (!s.selectedIrUrl && newIrs.length > 0) {
+                    // keep null so we don't decode on init; UI may choose to default later
+                    // s.selectedIrUrl = newIrs[0];
+                }
+                return { ...s, availableIrs: newIrs };
+            });
+            console.log('AudioEffectsStore: Fetched available IRs.');
+        } catch (error) {
+            console.error('AudioEffectsStore: Error fetching available IRs:', error);
+            store.update(s => ({ ...s, availableIrs: [], selectedIrUrl: null }));
+        }
     },
-    setConvolverMix: (mix: number) => {
-        store.update(s => ({ ...s, convolverMix: mix }));
-        audioEffectsStore.updateAllEffects();
-    },
+
     selectIr: async (irUrl: string | null) => {
         store.update(s => ({ ...s, selectedIrUrl: irUrl }));
-        await audioEffectsStore.loadImpulseResponse(getCurrentState().selectedIrUrl); // Ensure this uses the updated selectedIrUrl from the state
+        // If convolver is enabled, immediately load/decode the new IR. Otherwise defer until enabled.
+        const s2 = getCurrentState();
+        if (s2.convolverEnabled && irUrl) {
+            await audioEffectsStore.loadImpulseResponse(irUrl);
+        }
     },
 
-    // --- Generic Reverb Management ---
-    toggleGenericReverb: (enabled: boolean) => {
-        store.update(s => ({ ...s, genericReverbEnabled: enabled }));
-        // If enabling for the first time, start LFOs lazily to reduce startup cost
-        if (enabled) ensureStartReverbLFOs();
-        audioEffectsStore.updateAllEffects();
-    },
-    setGenericReverbMix: (mix: number) => {
-        store.update(s => {
-            // Only mark as custom if not currently in a performance mode that overrides
-            if (s.performanceMode === 'high') {
-                 s.genericReverbType = 'custom';
-                 s.genericReverbCustomSettings.mix = mix;
-            }
-            return { ...s, genericReverbMix: mix };
-        });
-        audioEffectsStore.updateAllEffects();
-    },
-    setGenericReverbDecay: (decay: number) => {
-        store.update(s => {
-            if (s.performanceMode === 'high') {
-                s.genericReverbType = 'custom';
-                s.genericReverbCustomSettings.decay = decay;
-            }
-            return { ...s, genericReverbDecay: decay };
-        });
-        audioEffectsStore.updateAllEffects();
-    },
-    setGenericReverbDamping: (damping: number) => {
-        store.update(s => {
-            if (s.performanceMode === 'high') {
-                s.genericReverbType = 'custom';
-                s.genericReverbCustomSettings.damping = damping;
-            }
-            return { ...s, genericReverbDamping: damping };
-        });
-        audioEffectsStore.updateAllEffects();
-    },
-    setGenericReverbPreDelay: (preDelay: number) => {
-        store.update(s => {
-            if (s.performanceMode === 'high') {
-                s.genericReverbType = 'custom';
-                s.genericReverbCustomSettings.preDelay = preDelay;
-            }
-            return { ...s, genericReverbPreDelay: preDelay };
-        });
-        audioEffectsStore.updateAllEffects();
-    },
-    setGenericReverbModulationRate: (rate: number) => {
-        store.update(s => {
-            if (s.performanceMode === 'high') {
-                s.genericReverbType = 'custom';
-                s.genericReverbCustomSettings.modulationRate = rate;
-            }
-            return { ...s, genericReverbModulationRate: rate };
-        });
-        audioEffectsStore.updateAllEffects();
-    },
-    setGenericReverbModulationDepth: (depth: number) => {
-        store.update(s => {
-            if (s.performanceMode === 'high') {
-                s.genericReverbType = 'custom';
-                s.genericReverbCustomSettings.modulationDepth = depth;
-            }
-            return { ...s, genericReverbModulationDepth: depth };
-        });
-        audioEffectsStore.updateAllEffects();
-    },
-    setGenericReverbType: (type: string) => {
-        store.update(s => ({ ...s, genericReverbType: type }));
-        audioEffectsStore.configureGenericReverb(type); // configureGenericReverb already calls updateAllEffects
-    },
-
-    /**
-     * Configures generic reverb parameters based on a preset type.
-     * Applies the selected preset's values to the generic reverb nodes and store state.
-     * If type is 'custom', it applies the values from genericReverbCustomSettings.
-     * @param type The preset type ('room', 'hall', 'plate', 'custom', etc.).
-     */
-    configureGenericReverb: (type: string) => {
-        store.update(s => {
-            // Define reverb presets
-            const presets: { [key: string]: typeof defaultGenericReverbCustomSettings } = {
-                room: { decay: 0.42, damping: 9000, mix: 0.16, preDelay: 0.008, modulationRate: 0.4, modulationDepth: 0.00008 },
-                hall: { decay: 0.62, damping: 6000, mix: 0.26, preDelay: 0.018, modulationRate: 0.5, modulationDepth: 0.0001 },
-                plate: { decay: 0.72, damping: 11500, mix: 0.20, preDelay: 0.008, modulationRate: 0.6, modulationDepth: 0.00009 },
-                space: { decay: 0.85, damping: 3800, mix: 0.32, preDelay: 0.045, modulationRate: 0.7, modulationDepth: 0.00012 },
-                studio: { decay: 0.52, damping: 7500, mix: 0.14, preDelay: 0.012, modulationRate: 0.3, modulationDepth: 0.00006 },
-                custom: s.genericReverbCustomSettings // Use current custom settings
-            };
-
-            // Get preset, or fallback to 'hall' if type is unrecognized
-            const p = presets[type] || presets.hall;
-            if (!presets[type]) {
-                console.warn(`AudioEffectsStore: Unrecognized generic reverb type "${type}", falling back to "hall".`);
-                type = 'hall';
-            }
-
-            console.log(`AudioEffectsStore: Generic reverb preset set to "${type}".`);
-            return {
-                ...s,
-                genericReverbDecay: p.decay,
-                genericReverbDamping: p.damping,
-                genericReverbMix: p.mix,
-                genericReverbPreDelay: p.preDelay,
-                genericReverbType: type, // This will be 'custom' if the user's settings were 'custom'
-                genericReverbModulationRate: p.modulationRate,
-                genericReverbModulationDepth: p.modulationDepth,
-                // If switching from a preset to custom, or if a preset is selected, copy values.
-                // If type is custom, genericReverbCustomSettings should already have the correct values.
-                genericReverbCustomSettings: type === 'custom' ? s.genericReverbCustomSettings : { ...p }
-            };
-        });
-        audioEffectsStore.updateAllEffects(); // Ensure overall state and node parameters are updated
-    },
-
-    // --- Dynamics Compressor Management ---
-    toggleCompressor: (enabled: boolean) => {
-        store.update(s => ({ ...s, compressorEnabled: enabled }));
-        audioEffectsStore.updateAllEffects();
-    },
-    setCompressorThreshold: (threshold: number) => {
-        store.update(s => ({ ...s, compressorThreshold: threshold }));
-        audioEffectsStore.updateAllEffects();
-    },
-    setCompressorKnee: (knee: number) => {
-        store.update(s => ({ ...s, compressorKnee: knee }));
-        audioEffectsStore.updateAllEffects();
-    },
-    setCompressorRatio: (ratio: number) => {
-        store.update(s => ({ ...s, compressorRatio: ratio }));
-        audioEffectsStore.updateAllEffects();
-    },
-    setCompressorAttack: (attack: number) => {
-        store.update(s => ({ ...s, compressorAttack: attack }));
-        audioEffectsStore.updateAllEffects();
-    },
-    setCompressorRelease: (release: number) => {
-        store.update(s => ({ ...s, compressorRelease: release }));
+    toggleConvolver: (enabled: boolean) => {
+        store.update(s => ({ ...s, convolverEnabled: enabled }));
+        // If enabling, and an IR is selected but not yet decoded, decode now (lazy decode).
+        const s = getCurrentState();
+        if (enabled && s.selectedIrUrl && !s.impulseResponseBuffer) {
+            audioEffectsStore.loadImpulseResponse(s.selectedIrUrl).catch(err => {
+                console.error('AudioEffectsStore: Failed to load IR on convolver enable', err);
+            });
+        }
         audioEffectsStore.updateAllEffects();
     },
 
-    // --- Spatial Audio (Panner) Management ---
-    setPannerPosition: (position: { x?: number; y?: number; z?: number }) => {
-        store.update(s => {
-            // Do not allow manual control if automation is enabled or not in high performance mode
-            if (s.pannerAutomationEnabled || s.performanceMode !== 'high') return s;
-            const newPos = { ...s.pannerPosition, ...position };
-            return { ...s, pannerPosition: newPos };
-        });
-        audioEffectsStore.updateAllEffects();
-    },
-    togglePannerAutomation: (enabled: boolean) => {
-        store.update(s => ({ ...s, pannerAutomationEnabled: enabled }));
-        // Call updateAllEffects to manage starting/stopping automation based on new state and visibility
-        audioEffectsStore.updateAllEffects();
-        audioEffectsStore.saveSettings();
-    },
-    setPannerAutomationRate: (rate: number) => {
-        store.update(s => ({ ...s, pannerAutomationRate: rate }));
-        audioEffectsStore.saveSettings();
+    loadImpulseResponse: async (irUrl: string | null) => {
+        const state = getCurrentState();
+        if (!irUrl || !state.audioContext || !state.convolverNode) {
+            store.update(s => ({ ...s, impulseResponseBuffer: null }));
+            if (state.convolverNode) state.convolverNode.buffer = null;
+            audioEffectsStore.updateAllEffects();
+            console.log('AudioEffectsStore: No IR URL provided or audioContext/convolver not ready. Clearing convolver buffer.');
+            return;
+        }
+
+        try {
+            console.log(`AudioEffectsStore: Loading impulse response from ${irUrl}...`);
+            const response = await fetch(irUrl);
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const arrayBuffer = await response.arrayBuffer();
+            // decodeAudioData is expensive; do it lazily when user enables convolver
+            const buffer = await state.audioContext.decodeAudioData(arrayBuffer);
+            store.update(s => ({ ...s, impulseResponseBuffer: buffer }));
+            // Set buffer on node (safe even if convolver is currently bypassed)
+            state.convolverNode.buffer = buffer;
+            audioEffectsStore.updateAllEffects();
+            console.log(`AudioEffectsStore: Impulse response for ${irUrl} loaded and set.`);
+        } catch (error) {
+            console.error(`AudioEffectsStore: Error loading impulse response from ${irUrl}:`, error);
+            store.update(s => ({ ...s, impulseResponseBuffer: null }));
+            if (state.convolverNode) state.convolverNode.buffer = null;
+            audioEffectsStore.updateAllEffects();
+        }
     },
 
-    toggleSpatialAudio: (enabled: boolean) => {
-        store.update(s => ({ ...s, spatialAudioEnabled: enabled }));
-        audioEffectsStore.updateAllEffects(); // This handles the cross-fade logic
-    },
-
-    // --- Stereo Widening Management ---
-    toggleStereoWidening: (enabled: boolean) => {
-        store.update(s => ({ ...s, stereoWideningEnabled: enabled }));
-        audioEffectsStore.updateAllEffects();
-    },
-    setStereoWideningAmount: (amount: number) => {
-        store.update(s => ({ ...s, stereoWideningAmount: amount }));
-        audioEffectsStore.updateAllEffects();
-    },
-
-    // --- Loudness Normalization Management ---
-    toggleLoudnessNormalization: (enabled: boolean) => {
+    toggleLoudnessNormalization: async (enabled: boolean) => {
+        // create the AudioWorklet lazily when enabling
+        if (enabled) {
+            await ensureLoudnessWorklet();
+        } else {
+            // when disabling, we leave the worklet in place (it is cheap after creation)
+            // but we ensure the gain ramps back to 1 in updateAllEffects via updateLoudnessNormalization
+        }
         store.update(s => ({ ...s, loudnessNormalizationEnabled: enabled }));
         audioEffectsStore.updateAllEffects();
-    },
-    setLoudnessTarget: (target: number) => {
-        store.update(s => ({ ...s, loudnessTarget: target }));
-        audioEffectsStore.saveSettings(); // No need to call updateAllEffects, the worklet will pick it up
     },
 
     /**
@@ -1356,66 +1228,74 @@ export const audioEffectsStore = {
         }
     },
 
-    /**
-     * Fetches the list of available Impulse Response files from the server.
-     */
-    fetchAvailableIrs: async () => {
-        if (typeof window === 'undefined') return;
-        try {
-            const response = await fetch('/api/irs'); // Ensure this API endpoint exists and works
-            if (!response.ok) throw new Error('Failed to fetch IR list');
-            const newIrs: string[] = await response.json();
-            store.update(s => {
-                // If a selected IR was loaded from localStorage, check if it's still available.
-                // If not, clear the selection. If no IR selected and available, default to first.
-                if (s.selectedIrUrl && !newIrs.includes(s.selectedIrUrl)) {
-                     console.warn(`AudioEffectsStore: Stored IR URL (${s.selectedIrUrl}) not found in available IRs. Clearing selection.`);
-                     s.selectedIrUrl = null;
-                } else if (!s.selectedIrUrl && newIrs.length > 0) {
-                    s.selectedIrUrl = newIrs[0];
-                }
-                return { ...s, availableIrs: newIrs };
-            });
-            console.log('AudioEffectsStore: Fetched available IRs.');
-        } catch (error) {
-            console.error('AudioEffectsStore: Error fetching available IRs:', error);
-            store.update(s => ({ ...s, availableIrs: [], selectedIrUrl: null }));
-        }
+    // Add new methods for reverb & panner control
+    updateGenericReverbSettings: (settings: Partial<typeof defaultGenericReverbCustomSettings>) => {
+        store.update(s => ({ ...s, genericReverbCustomSettings: { ...s.genericReverbCustomSettings, ...settings } }));
+        audioEffectsStore.updateAllEffects();
     },
 
-    /**
-     * Loads an Impulse Response audio file into the ConvolverNode.
-     * @param irUrl The URL of the IR file to load, or null to clear.
-     */
-    loadImpulseResponse: async (irUrl: string | null) => {
-        const state = getCurrentState();
-        if (!irUrl || !state.audioContext || !state.convolverNode) {
-            store.update(s => ({ ...s, impulseResponseBuffer: null }));
-            if (state.convolverNode) state.convolverNode.buffer = null; // Clear existing buffer
-            audioEffectsStore.updateAllEffects(); // Update connections to reflect no convolver
-            console.log('AudioEffectsStore: No IR URL provided or audioContext/convolver not ready. Clearing convolver buffer.');
-            return;
-        }
+    configureGenericReverb: (type: string) => {
+        store.update(s => ({ ...s, genericReverbType: type }));
+        audioEffectsStore.updateAllEffects();
+    },
 
-        try {
-            console.log(`AudioEffectsStore: Loading impulse response from ${irUrl}...`);
-            const response = await fetch(irUrl);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const arrayBuffer = await response.arrayBuffer();
-            const buffer = await state.audioContext.decodeAudioData(arrayBuffer);
-            store.update(s => ({ ...s, impulseResponseBuffer: buffer }));
-            state.convolverNode.buffer = buffer; // Set buffer on the actual node
-            audioEffectsStore.updateAllEffects(); // Re-evaluate connections after buffer loads
-            console.log(`AudioEffectsStore: Impulse response for ${irUrl} loaded and set.`);
-        } catch (error) {
-            console.error(`AudioEffectsStore: Error loading impulse response from ${irUrl}:`, error);
-            store.update(s => ({ ...s, impulseResponseBuffer: null }));
-            if (state.convolverNode) state.convolverNode.buffer = null;
-            audioEffectsStore.updateAllEffects(); // Update connections to reflect error
-        }
+    toggleGenericReverb: (enabled: boolean) => {
+        store.update(s => ({ ...s, genericReverbEnabled: enabled }));
+        audioEffectsStore.updateAllEffects();
+    },
+
+    setGenericReverbMix: (mix: number) => {
+        store.update(s => ({ ...s, genericReverbMix: mix }));
+        audioEffectsStore.updateAllEffects();
+    },
+
+    updateCompressorSettings: (settings: Partial<{
+        threshold: number;
+        knee: number;
+        ratio: number;
+        attack: number;
+        release: number;
+    }>) => {
+        store.update(s => ({ ...s, ...settings }));
+        audioEffectsStore.updateAllEffects();
+    },
+
+    toggleCompressor: (enabled: boolean) => {
+        store.update(s => ({ ...s, compressorEnabled: enabled }));
+        audioEffectsStore.updateAllEffects();
+    },
+
+    updatePannerPosition: (x: number, y: number, z: number) => {
+        store.update(s => ({ ...s, pannerPosition: { x, y, z } }));
+        audioEffectsStore.updateAllEffects();
+    },
+
+    togglePannerAutomation: (enabled: boolean) => {
+        store.update(s => ({ ...s, pannerAutomationEnabled: enabled }));
+        audioEffectsStore.updateAllEffects();
+    },
+
+    setPannerAutomationRate: (rate: number) => {
+        store.update(s => ({ ...s, pannerAutomationRate: rate }));
+    },
+
+    toggleSpatialAudio: (enabled: boolean) => {
+        store.update(s => ({ ...s, spatialAudioEnabled: enabled }));
+        audioEffectsStore.updateAllEffects();
+    },
+
+    toggleStereoWidening: (enabled: boolean) => {
+        store.update(s => ({ ...s, stereoWideningEnabled: enabled }));
+        audioEffectsStore.updateAllEffects();
+    },
+
+    setStereoWideningAmount: (amount: number) => {
+        store.update(s => ({ ...s, stereoWideningAmount: amount }));
+        audioEffectsStore.updateAllEffects();
+    },
+
+    setConvolverMix: (mix: number) => {
+        store.update(s => ({ ...s, convolverMix: mix }));
+        audioEffectsStore.updateAllEffects();
     },
 };
-
-audioEffectsStore.loadSettings(); // Load settings on store initialization
