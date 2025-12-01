@@ -297,7 +297,7 @@ const updateStereoWidener = (state: AudioEffectsState) => {
     }
 };
 
-const SPATIAL_AUDIO_WET_GAIN_COMPENSATION = 10.5; // ~+3.5dB boost. A subtle boost to enhance the spatial effect without altering timbre.
+const SPATIAL_AUDIO_WET_GAIN_COMPENSATION = 10.5; // ~+3dB boost. Compensates for perceived volume loss from HRTF without over-emphasizing bass/mids.
 
 const updateSpatialAudioFade = (state: AudioEffectsState) => {
     if (!state.spatialWetGainNode || !state.spatialBypassGainNode || !state.audioContext) return;
@@ -501,45 +501,29 @@ const stopPannerAutomation = () => {
     }
 };
 
-// Helper function to detect if it's likely a desktop environment
-const isDesktopDevice = () => {
-    if (typeof window === 'undefined') return false;
-    // Check for pointer: fine (mouse/trackpad) and hover: hover (not a touch-primary device)
-    // This is a strong heuristic for desktop-like environments.
-    return window.matchMedia('(hover: hover) and (pointer: fine)').matches;
-};
+// Helper function to detect if it's likely a desktop environment is no longer needed.
 
 // Function to handle visibility change for performance optimization
 const handleVisibilityChange = () => {
     const state = getCurrentState();
-    if (!state.audioContext || !state._audioElement) return; // Ensure audioElement is also available
-
-    // We decide whether to suspend/resume AudioContext based on device type
-    const isDesktop = isDesktopDevice();
+    if (!state.audioContext || !state._audioElement) return;
 
     if (document.visibilityState === 'hidden') {
-        if (!isDesktop) {
-            // Page is hidden and it's a mobile-like device, suspend the AudioContext
-            if (state.audioContext.state === 'running') {
-                state.audioContext.suspend().then(() => {
-                    console.log('AudioEffectsStore: AudioContext suspended due to page hiding (mobile optimization).');
-                }).catch(e => console.error('AudioEffectsStore: Error suspending AudioContext:', e));
+        // Always suspend when hidden to save resources, especially on mobile.
+        if (state.audioContext.state === 'running') {
+            state.audioContext.suspend().then(() => {
+                console.log('AudioEffectsStore: AudioContext suspended due to page hiding.');
+            }).catch(e => console.error('AudioEffectsStore: Error suspending AudioContext:', e));
 
-                // Also pause the HTMLAudioElement
-                if (!state._audioElement.paused) {
-                    state._audioElement.pause();
-                    store.update(s => ({ ...s, _wasPlayingBeforeSuspend: true })); // Mark that it was playing
-                    console.log('AudioEffectsStore: HTMLAudioElement paused due to page hiding.');
-                }
+            // Also pause the HTMLAudioElement
+            if (!state._audioElement.paused) {
+                state._audioElement.pause();
+                store.update(s => ({ ...s, _wasPlayingBeforeSuspend: true })); // Mark that it was playing
+                console.log('AudioEffectsStore: HTMLAudioElement paused due to page hiding.');
             }
-            // On mobile-like, also stop panner automation to save resources
-            stopPannerAutomation();
-        } else {
-            console.log('AudioEffectsStore: Page hidden on desktop. AudioContext will remain running.');
-            // On desktop, the AudioContext remains running.
-            // Panner automation will continue if `pannerAutomationEnabled` is true
-            // because `updateAllEffects` will manage its lifecycle.
         }
+        // Always stop panner automation when hidden to prevent background processing.
+        stopPannerAutomation();
     } else if (document.visibilityState === 'visible') {
         // Page is visible, resume the AudioContext if it was suspended
         if (state.audioContext.state === 'suspended') {
@@ -557,8 +541,7 @@ const handleVisibilityChange = () => {
                 }
             }).catch(e => console.error('AudioEffectsStore: Error resuming AudioContext:', e));
         } else {
-            // If context was already running (e.g., on desktop, or dev tools open, then close),
-            // just ensure all effects are updated (e.g., to restart automation if needed).
+            // If context was already running, just ensure all effects are updated.
             audioEffectsStore.updateAllEffects();
         }
     }
@@ -672,8 +655,8 @@ export const audioEffectsStore = {
         console.log('AudioEffectsStore: DynamicsCompressorNode created.');
 
         const pannerNode = audioContext.createPanner();
-        // Use the 'equalpower' model for clear stereo panning without the filtering artifacts of HRTF.
-        pannerNode.panningModel = 'equalpower';
+        // Use the HRTF model for high-quality binaural spatialization (best with headphones).
+        pannerNode.panningModel = 'HRTF';
         pannerNode.distanceModel = 'inverse'; // More realistic distance falloff
         pannerNode.positionX.value = state.pannerPosition.x;
         pannerNode.positionY.value = state.pannerPosition.y;
@@ -1127,13 +1110,10 @@ export const audioEffectsStore = {
         updateLoudnessNormalization(state);
         updateStereoWidener(state); // NEW: Update stereo widener
 
-        // Manage panner automation:
-        // - Always stop if disabled by user or if context is closing
-        // - Start/continue if enabled AND (on desktop OR (on mobile AND visible))
-        const isDesktop = isDesktopDevice();
+        // Manage panner automation: Only run if enabled, context is running, and page is visible.
         const shouldRunAutomation = state.pannerAutomationEnabled &&
-                                     state.audioContext?.state === 'running' && // Only run if context is actually running
-                                     (isDesktop || document.visibilityState === 'visible'); // On desktop, run always; on mobile, only if visible
+                                     state.audioContext?.state === 'running' &&
+                                     document.visibilityState === 'visible';
 
         if (shouldRunAutomation) {
             startPannerAutomation();
