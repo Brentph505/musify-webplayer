@@ -24,6 +24,10 @@ export const defaultGenericReverbCustomSettings = {
 
 const AUDIO_SETTINGS_LOCAL_STORAGE_KEY = 'musify-audio-settings';
 
+// NEW: Constants for desired audio context parameters to influence buffer size
+const DESIRED_BUFFER_SIZE_SAMPLES = 256; // Target buffer length in samples, like FL Studio ASIO
+const DEFAULT_SAMPLE_RATE = 44100; // Common sample rate for calculating latency hint
+
 // ---------------------------
 // Types
 // ---------------------------
@@ -515,15 +519,25 @@ export const audioEffectsStore = {
             return;
         }
 
-        // Use latencyHint: 'balanced' to prioritize stable audio playback over ultra-low latency.
-        // This can help prevent cracking noises and improve performance by allowing the browser
-        // to use a larger internal buffer size if needed, depending on the system capabilities.
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ latencyHint: 'balanced' });
+        // Calculate target latency in seconds based on desired buffer size and sample rate.
+        // Note: This is a hint; the browser may not use this exact buffer size depending on hardware
+        // and OS. Smaller buffers can lead to lower latency but higher CPU usage and potential cracking
+        // if the system cannot keep up reliably. It aims for performance akin to 256-sample ASIO buffers.
+        const targetLatencySeconds = DESIRED_BUFFER_SIZE_SAMPLES / DEFAULT_SAMPLE_RATE;
+
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+            latencyHint: targetLatencySeconds, // Attempt to achieve 256 samples buffer length
+            sampleRate: DEFAULT_SAMPLE_RATE    // Specify sample rate
+        });
         // Initial resume if suspended (e.g., due to autoplay policy)
         if (audioContext.state === 'suspended') {
             await audioContext.resume();
         }
-        console.log('AudioEffectsStore: AudioContext initialized. State:', audioContext.state);
+        console.log(`AudioEffectsStore: AudioContext initialized. State: ${audioContext.state}, ` +
+                    `Sample Rate: ${audioContext.sampleRate} Hz, ` +
+                    `Base Latency: ${audioContext.baseLatency * 1000} ms.`);
+        console.log(`AudioEffectsStore: Requested buffer size ${DESIRED_BUFFER_SIZE_SAMPLES} samples.`);
+
 
         const sourceNode = audioContext.createMediaElementSource(audioElement);
         const masterGainNode = audioContext.createGain();
