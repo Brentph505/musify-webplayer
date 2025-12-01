@@ -62,17 +62,18 @@
     $: loudnessNormalizationEnabled = audioEffectsState?.loudnessNormalizationEnabled ?? false;
     $: loudnessTarget = audioEffectsState?.loudnessTarget ?? -14;
     $: momentaryLoudness = audioEffectsState?.momentaryLoudness ?? -70;
+    $: performanceMode = audioEffectsState?.performanceMode ?? 'high';
 
     const PLAYER_UI_LOCAL_STORAGE_KEY = 'musify-player-ui-settings';
     let showEq: boolean = false;
     let audioEffectsInitialized: boolean = false; // NEW: Track if audio effects are initialized
 
     // FADE EFFECT CONSTANT
-    const FADE_DURATION_SECONDS = 0.5; // Duration of the fade effect in seconds
+    // Removed: const FADE_DURATION_SECONDS = 0.5; // Duration of the fade effect in seconds
 
     // Keep track of the previously playing song to detect changes
     let previousSongId: string | null = null;
-    let isFadingOut: boolean = false; // Flag to prevent multiple fade operations
+    // Removed: let isFadingOut: boolean = false; // Flag to prevent multiple fade operations
 
     // Visualizer state
     let bassIntensity = 0; // Normalized 0-1
@@ -215,60 +216,27 @@
                 releaseWakeLock();
             }
 
-            // Handle song changes and audio loading with fade effects
+            // Handle song changes and audio loading without fade effects
             if (audioEffectsState && audioEffectsState.audioContext) {
                 // If a new song is being set (currentSong is not null and its ID is different from the previous)
                 if (currentSong && currentSong.id !== previousSongId) {
-                    const songToLoad = currentSong; // Capture song to prevent race condition with timeout
-                    // Only fade out if something was playing before and it's not the initial load or clearing
-                    if (previousSongId !== null && !audioElement.paused && !isFadingOut) {
-                        isFadingOut = true;
-                        // Fade out current audio, explicitly using FADE_DURATION_SECONDS
-                         
-                        
-                        setTimeout(() => {
-                            // After fade out, change song source
-                            audioElement.src = songToLoad.audioUrl;
-                            audioElement.load();
-                            console.log('Player.svelte subscribe: New song src loaded for:', songToLoad.name);
-                            isFadingOut = false;
-                            
-                            // Ensure volume is set for the new song, fading in if should be playing
-                            // Explicitly use FADE_DURATION_SECONDS for fade-in
-                             
-                            // The reactive block `$: { if (isPlaying) ... }` will handle audioElement.play()
-                        }, FADE_DURATION_SECONDS * 1000); // Wait for fade out duration
-                    } else if (!isFadingOut) { // First song, or player was paused when song changed
-                        audioElement.src = songToLoad.audioUrl;
-                        audioElement.load();
-                        console.log('Player.svelte subscribe: First song or paused when song changed, src loaded for:', songToLoad.name);
-                        // Set volume without fade-in if paused, or with fade-in if playing (handled by reactive block)
-                        audioEffectsStore.setMasterVolume(volume);
-                    }
+                    audioElement.src = currentSong.audioUrl;
+                    audioElement.load();
+                    console.log('Player.svelte subscribe: New song src loaded for:', currentSong.name);
+                    audioEffectsStore.setMasterVolume(volume); // Set volume immediately
                 } else if (!currentSong && previousSongId !== null) {
                     // If currentSong becomes null (e.g., player cleared from external action)
-                    if (!isFadingOut) { // Ensure not already fading from a song change
-                         isFadingOut = true;
-                         setTimeout(() => {
-                             audioElement.src = '';
-                             audioElement.load();
-                             isFadingOut = false;
-                             audioEffectsStore.setMasterVolume(volume); // Reset volume to current store volume
-                             console.log('Player.svelte subscribe: Audio source cleared with fade-out.');
-                         }, FADE_DURATION_SECONDS * 1000);
-                    } else {
-                        // If already fading due to a song change, just clear source
-                        audioElement.src = '';
-                        audioElement.load();
-                        console.log('Player.svelte subscribe: Audio source cleared during another fade.');
-                    }
-                } else if (!isFadingOut) {
-                    // If current song is the same (or initially no song) AND not in the middle of a fade-out.
+                    audioElement.src = '';
+                    audioElement.load();
+                    audioEffectsStore.setMasterVolume(volume); // Reset volume to current store volume
+                    console.log('Player.svelte subscribe: Audio source cleared.');
+                } else {
+                    // If current song is the same (or initially no song).
                     // This covers manual volume changes for the *same* song.
                     audioEffectsStore.setMasterVolume(volume);
                 }
             } else {
-                // Fallback if audioEffectsState/audioContext not ready for fading
+                // Fallback if audioEffectsState/audioContext not ready for Web Audio API control
                 if (currentSong && audioElement.src !== currentSong.audioUrl) {
                     audioElement.src = currentSong.audioUrl;
                     audioElement.load();
@@ -286,7 +254,7 @@
         const unsubscribeAudioEffects = audioEffectsStore.subscribe(state => {
             audioEffectsState = state;
             // When audioEffectsState is initialized or changed, ensure master volume reflects current player store volume
-            if (audioEffectsState && audioEffectsState.audioContext && audioEffectsState.masterGainNode && !isFadingOut) {
+            if (audioEffectsState && audioEffectsState.audioContext && audioEffectsState.masterGainNode) {
                 audioEffectsStore.setMasterVolume(volume);
             }
             // Start visualizer once audioEffectsStore is initialized and has analyserNode
@@ -352,7 +320,7 @@
                 }
             };
             initializeAndPlay();
-        } else if (audioEffectsInitialized && audioElement && audioEffectsState?.audioContext && !isFadingOut) {
+        } else if (audioEffectsInitialized && audioElement && audioEffectsState?.audioContext) {
             // Audio effects are initialized, handle play/pause.
             if (isPlaying) {
                 if (currentSong) { // Only attempt to play if there's a current song
@@ -865,6 +833,7 @@
             bind:loudnessNormalizationEnabled={loudnessNormalizationEnabled}
             bind:loudnessTarget={loudnessTarget}
             momentaryLoudness={momentaryLoudness}
+            performanceMode={performanceMode}
 
             on:updateEqGain={(e) => audioEffectsStore.updateEqGain(e.detail.index, e.detail.value)}
             on:applyEqPreset={(e) => audioEffectsStore.applyEqPreset(e.detail.gains)}
@@ -891,6 +860,7 @@
             on:toggleSpatialAudio={(e) => audioEffectsStore.toggleSpatialAudio(e.detail.enabled)}
             on:toggleLoudnessNormalization={(e) => audioEffectsStore.toggleLoudnessNormalization(e.detail.enabled)}
             on:setLoudnessTarget={(e) => audioEffectsStore.setLoudnessTarget(e.detail.target)}
+            on:setPerformanceMode={(e) => audioEffectsStore.setPerformanceMode(e.detail.mode)}
         />
     </div>
 {/if}

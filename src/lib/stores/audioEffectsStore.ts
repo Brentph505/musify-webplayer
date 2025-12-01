@@ -29,6 +29,7 @@ const AUDIO_SETTINGS_LOCAL_STORAGE_KEY = 'musify-audio-settings';
 // ---------------------------
 
 export type AudioEffectsState = {
+    performanceMode: 'low' | 'balanced' | 'high';
     eqGains: number[];
     convolverEnabled: boolean;
     convolverMix: number;
@@ -92,6 +93,7 @@ export type AudioEffectsState = {
 // ---------------------------
 
 const initialAudioEffectsState: AudioEffectsState = {
+    performanceMode: 'high',
     eqGains: initialEqBands.map(b => b.gain),
     convolverEnabled: false,
     convolverMix: 0.3,
@@ -163,6 +165,7 @@ const getCurrentState = () => get(store);
 const saveToLocalStorage = (state: AudioEffectsState) => {
     if (typeof window === 'undefined' || !window.localStorage) return;
     const settingsToSave = {
+        performanceMode: state.performanceMode,
         eqGains: state.eqGains,
         convolverEnabled: state.convolverEnabled,
         convolverMix: state.convolverMix,
@@ -653,6 +656,39 @@ export const audioEffectsStore = {
         audioEffectsStore.configureGenericReverb(getCurrentState().genericReverbType);
         audioEffectsStore.updateAllEffects(); // Final update to set all gains/states based on loaded settings
         console.log('AudioEffectsStore: Initialization complete.');
+    },
+
+    /**
+     * Sets the performance profile, enabling or disabling heavy effects.
+     * @param mode The performance mode to set.
+     */
+    setPerformanceMode: (mode: 'low' | 'balanced' | 'high') => {
+        store.update(s => {
+            const newState: AudioEffectsState = { ...s, performanceMode: mode };
+
+            switch (mode) {
+                case 'low':
+                    // Disable all heavy effects
+                    newState.convolverEnabled = false;
+                    newState.genericReverbEnabled = false;
+                    newState.compressorEnabled = false;
+                    newState.spatialAudioEnabled = false;
+                    newState.loudnessNormalizationEnabled = false;
+                    break;
+                case 'balanced':
+                    // Disable the heaviest effects: IR reverb, spatial audio, and loudness meter
+                    newState.convolverEnabled = false;
+                    newState.spatialAudioEnabled = false;
+                    newState.loudnessNormalizationEnabled = false;
+                    // User's preference for standard reverb and compressor is maintained
+                    break;
+                case 'high':
+                    // All effects are available to the user, no changes to enabled states are forced.
+                    break;
+            }
+            return newState;
+        });
+        audioEffectsStore.updateAllEffects(); // Apply changes immediately
     },
 
     /**

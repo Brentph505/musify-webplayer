@@ -5,11 +5,13 @@
     import Zap from 'lucide-svelte/icons/zap';
     import Ear from 'lucide-svelte/icons/ear';
     import Gauge from 'lucide-svelte/icons/gauge'; // NEW: Import icon for Loudness
+    import Activity from 'lucide-svelte/icons/activity'; // NEW: Import icon for Performance
 
     const dispatch = createEventDispatcher(); // Initialize dispatcher for custom events
 
     // Exported props, now received from Player.svelte (which gets them from audioEffectsStore)
     export let audioContext: AudioContext;
+    export let performanceMode: 'low' | 'balanced' | 'high';
     export let filterNodes: BiquadFilterNode[];
     export let bands: readonly ({ frequency: number; type: "lowshelf" | "peaking" | "highshelf"; q: number; gain: number; })[];
     export let eqGains: number[]; // Two-way bound
@@ -306,6 +308,46 @@
 
 <div class="eq-scroll-wrapper">
   <div class="eq-controls">
+    <!-- NEW: Performance Mode Section -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-header-label">
+          <Activity size={18} /> Performance Profile
+        </span>
+      </div>
+      <div class="card-body">
+        <div class="performance-presets">
+          <button
+            class="preset-button"
+            class:selected={performanceMode === 'low'}
+            on:click={() => dispatch('setPerformanceMode', { mode: 'low' })}
+            title="Only EQ is active. Lowest CPU usage."
+          >
+            Low
+            <span class="preset-desc">Basic EQ</span>
+          </button>
+          <button
+            class="preset-button"
+            class:selected={performanceMode === 'balanced'}
+            on:click={() => dispatch('setPerformanceMode', { mode: 'balanced' })}
+            title="Enables standard reverb and compressor. Disables heavy effects like IR reverb and spatial audio."
+          >
+            Balanced
+            <span class="preset-desc">Standard Effects</span>
+          </button>
+          <button
+            class="preset-button"
+            class:selected={performanceMode === 'high'}
+            on:click={() => dispatch('setPerformanceMode', { mode: 'high' })}
+            title="All audio effects are available. Highest CPU usage."
+          >
+            High
+            <span class="preset-desc">All Effects</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- EQ Section -->
     <div class="card">
       <div class="card-header">
@@ -356,20 +398,20 @@
 
     <!-- Reverb Section -->
     <div class="card collapsible">
-      <button type="button" class="card-header" on:click={() => reverbCardOpen = !reverbCardOpen}>
+      <button type="button" class="card-header" on:click={() => reverbCardOpen = !reverbCardOpen} disabled={performanceMode === 'low'}>
         <span class="card-header-label">
           <Sliders size={18} /> Reverb
         </span>
       </button>
-      {#if reverbCardOpen}
+      {#if reverbCardOpen && performanceMode !== 'low'}
         <div class="card-body">
           <!-- IR Reverb -->
           <div class="reverb-subheader">
             <span class="reverb-label">Impulse Response</span>
-            <input type="checkbox" id="convolver-enable" bind:checked={convolverEnabled} on:change={handleConvolverToggle} disabled={!impulseResponseBuffer} />
+            <input type="checkbox" id="convolver-enable" bind:checked={convolverEnabled} on:change={handleConvolverToggle} disabled={!impulseResponseBuffer || performanceMode !== 'high'} />
           </div>
           <div class="custom-dropdown-wrapper" id="ir-custom-dropdown">
-            <button class="dropdown-toggle" on:click|stopPropagation={toggleIrDropdown} aria-expanded={irDropdownOpen} disabled={!convolverEnabled}>
+            <button class="dropdown-toggle" on:click|stopPropagation={toggleIrDropdown} aria-expanded={irDropdownOpen} disabled={!convolverEnabled || performanceMode !== 'high'}>
               {selectedIrUrl ? getFilenameFromUrl(selectedIrUrl) : 'Select IR'} <span class="arrow">▼</span>
             </button>
             {#if irDropdownOpen}
@@ -472,13 +514,13 @@
 
     <!-- Compressor Section -->
     <div class="card collapsible">
-      <button type="button" class="card-header" on:click={() => compressorCardOpen = !compressorCardOpen}>
+      <button type="button" class="card-header" on:click={() => compressorCardOpen = !compressorCardOpen} disabled={performanceMode === 'low'}>
         <span class="card-header-label">
           <Zap size={18} /> Compressor
         </span>
-        <input type="checkbox" on:click|stopPropagation bind:checked={compressorEnabled} on:change={handleCompressorToggle} />
+        <input type="checkbox" on:click|stopPropagation bind:checked={compressorEnabled} on:change={handleCompressorToggle} disabled={performanceMode === 'low'} />
       </button>
-      {#if compressorCardOpen}
+      {#if compressorCardOpen && performanceMode !== 'low'}
         <div class="card-body">
           <div class="slider-control">
             <span>Threshold:</span>
@@ -511,13 +553,13 @@
 
     <!-- Spatial Audio Section -->
     <div class="card collapsible">
-      <button type="button" class="card-header" on:click={() => spatialAudioCardOpen = !spatialAudioCardOpen}>
+      <button type="button" class="card-header" on:click={() => spatialAudioCardOpen = !spatialAudioCardOpen} disabled={performanceMode !== 'high'}>
         <span class="card-header-label">
           <Ear size={18} /> Spatial Audio
         </span>
-        <input type="checkbox" on:click|stopPropagation bind:checked={spatialAudioEnabled} on:change={handleSpatialAudioToggle} />
+        <input type="checkbox" on:click|stopPropagation bind:checked={spatialAudioEnabled} on:change={handleSpatialAudioToggle} disabled={performanceMode !== 'high'} />
       </button>
-      {#if spatialAudioCardOpen}
+      {#if spatialAudioCardOpen && performanceMode === 'high'}
         <div class="card-body">
           <div class="reverb-subheader">
             <span class="reverb-label">8D Automation</span>
@@ -552,13 +594,13 @@
 
     <!-- NEW: Loudness Normalization Section -->
     <div class="card collapsible">
-      <button type="button" class="card-header" on:click={() => loudnessCardOpen = !loudnessCardOpen}>
+      <button type="button" class="card-header" on:click={() => loudnessCardOpen = !loudnessCardOpen} disabled={performanceMode !== 'high'}>
         <span class="card-header-label">
           <Gauge size={18} /> Loudness Matching
         </span>
-        <input type="checkbox" on:click|stopPropagation bind:checked={loudnessNormalizationEnabled} on:change={handleLoudnessNormalizationToggle} />
+        <input type="checkbox" on:click|stopPropagation bind:checked={loudnessNormalizationEnabled} on:change={handleLoudnessNormalizationToggle} disabled={performanceMode !== 'high'} />
       </button>
-      {#if loudnessCardOpen}
+      {#if loudnessCardOpen && performanceMode === 'high'}
         <div class="card-body">
           <div class="loudness-presets">
             {#each loudnessPresets as preset (preset.name)}
@@ -917,6 +959,24 @@
     .status-message.info {
         color: #9bd3ff;
     }
+
+    /* NEW STYLES for Performance Card */
+    .performance-presets {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+    }
+
+    .preset-button .preset-desc {
+        display: block;
+        font-size: 0.8em;
+        color: #b3b3b3;
+    }
+    
+    .preset-button.selected .preset-desc {
+        color: #111;
+    }
+
 
     /* NEW STYLES for Loudness Card */
     .loudness-presets {
