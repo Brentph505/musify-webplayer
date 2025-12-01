@@ -3,21 +3,6 @@
     import Sidebar from '$lib/components/Sidebar.svelte';
     import Player from '$lib/components/Player.svelte';
     import Navbar from '$lib/components/Navbar.svelte';
-    import { audioEffectsStore } from '$lib/stores/audioEffectsStore.js';
-    import { onMount } from 'svelte';
-
-    onMount(() => {
-        const handleBeforeUnload = () => {
-            audioEffectsStore.destroy();
-        };
-
-        window.addEventListener('beforeunload', handleBeforeUnload);
-        
-        return () => {
-            window.removeEventListener('beforeunload', handleBeforeUnload);
-            audioEffectsStore.destroy();
-        };
-    });
 </script>
 
 <div class="app-layout">
