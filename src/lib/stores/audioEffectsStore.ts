@@ -109,6 +109,7 @@ export type AudioEffectsState = {
     _priorConvolverEnabled: boolean | null;
     _priorSpatialAudioEnabled: boolean | null;
     _priorLoudnessNormalizationEnabled: boolean | null;
+    _priorPannerAutomationEnabled: boolean | null; // NEW: Temporary storage for panner automation enabled state
 };
 
 // ---------------------------
@@ -180,6 +181,7 @@ const initialAudioEffectsState: AudioEffectsState = {
     _priorConvolverEnabled: null,
     _priorSpatialAudioEnabled: null,
     _priorLoudnessNormalizationEnabled: null,
+    _priorPannerAutomationEnabled: null, // NEW: Initialize temporary storage to null
 
     // NEW: Initialize audio element reference
     _audioElement: null,
@@ -742,6 +744,7 @@ export const audioEffectsStore = {
                 newState._priorConvolverEnabled = s.convolverEnabled;
                 newState._priorSpatialAudioEnabled = s.spatialAudioEnabled;
                 newState._priorLoudnessNormalizationEnabled = s.loudnessNormalizationEnabled;
+                newState._priorPannerAutomationEnabled = s.pannerAutomationEnabled; // NEW: Save panner automation state
             }
 
             // Define specific algorithmic settings for 'low' and 'balanced' modes
@@ -769,6 +772,7 @@ export const audioEffectsStore = {
                     newState.compressorEnabled = false; // Forced off
                     newState.spatialAudioEnabled = false;
                     newState.loudnessNormalizationEnabled = false;
+                    newState.pannerAutomationEnabled = false; // NEW: Disable panner automation in low mode
 
                     // Apply minimal/off generic reverb algorithm
                     newState.genericReverbDecay = lowGenericReverbAlgorithm.decay;
@@ -793,6 +797,7 @@ export const audioEffectsStore = {
                     newState.convolverEnabled = false;
                     newState.spatialAudioEnabled = false;
                     newState.loudnessNormalizationEnabled = false;
+                    newState.pannerAutomationEnabled = false; // NEW: Disable panner automation in balanced mode
 
                     // Ensure generic reverb and compressor are enabled in balanced mode
                     newState.genericReverbEnabled = true; // Forced on
@@ -856,6 +861,9 @@ export const audioEffectsStore = {
                     if (oldMode !== 'high' && newState._priorLoudnessNormalizationEnabled !== null) {
                         newState.loudnessNormalizationEnabled = newState._priorLoudnessNormalizationEnabled;
                     }
+                    if (oldMode !== 'high' && newState._priorPannerAutomationEnabled !== null) { // NEW: Restore panner automation state
+                        newState.pannerAutomationEnabled = newState._priorPannerAutomationEnabled;
+                    }
 
                     // Clear prior settings after restoration
                     newState._priorGenericReverbType = null;
@@ -864,6 +872,7 @@ export const audioEffectsStore = {
                     newState._priorConvolverEnabled = null;
                     newState._priorSpatialAudioEnabled = null;
                     newState._priorLoudnessNormalizationEnabled = null;
+                    newState._priorPannerAutomationEnabled = null; // NEW: Clear panner automation prior state
 
                     // Important: `configureGenericReverb` needs the updated state.
                     // This call might need to be outside `store.update` if it uses `dispatch` or relies on
@@ -989,10 +998,13 @@ export const audioEffectsStore = {
 
         // --- Spatial Audio Cross-fader setup ---
         // The compressor output splits into two parallel paths that will be cross-faded.
+        // The wet path's gain node is placed *before* the panner to gate the signal, saving CPU
+        // when spatial audio is disabled.
+
         // Path 1: The "wet" signal with spatialization
-        s.compressorNode.connect(s.pannerNode);
-        s.pannerNode.connect(s.spatialWetGainNode);
-        s.spatialWetGainNode.connect(s.loudnessNormalizationGainNode);
+        s.compressorNode.connect(s.spatialWetGainNode);
+        s.spatialWetGainNode.connect(s.pannerNode);
+        s.pannerNode.connect(s.loudnessNormalizationGainNode);
 
         // Path 2: The "dry" (bypass) signal
         s.compressorNode.connect(s.spatialBypassGainNode);

@@ -196,6 +196,22 @@ export const playerStore = {
         });
     },
 
+    restartCurrentSong: () => { // NEW method for single track looping
+        player.update(state => {
+            if (state.currentSong) {
+                console.log(`playerStore: Restarting current song: ${state.currentSong.name}`);
+                // Only reset progress and set isPlaying to true.
+                // The actual audio playback will be handled by the reactive block in Player.svelte.
+                return {
+                    ...state,
+                    progress: 0,
+                    isPlaying: true,
+                };
+            }
+            return state; // No song to restart
+        });
+    },
+
     playNextSong: () => {
         player.update(state => {
             if (!state.currentSong) return { ...state, isPlaying: false };

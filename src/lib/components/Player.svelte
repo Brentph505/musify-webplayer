@@ -305,7 +305,6 @@
     });
 
     // Reactive block for play/pause logic
-    // This block now handles initializing the AudioContext on the first play attempt.
     $: {
         if (isPlaying && currentSong && !audioEffectsInitialized && audioElement) {
             // First play attempt: initialize the audio effects store. This requires a user gesture.
@@ -324,12 +323,14 @@
             // Audio effects are initialized, handle play/pause.
             if (isPlaying) {
                 if (currentSong) { // Only attempt to play if there's a current song
+                    // Crucial: If the AudioContext is suspended, attempt to resume it *before* playing the audio element.
                     if (audioEffectsState.audioContext.state === 'suspended') {
                         console.log('Player.svelte reactive: Attempting to resume AudioContext before playing.');
                         audioEffectsState.audioContext.resume().then(() => {
                             audioElement.play().catch((e: Error) => console.error("Player.svelte reactive: Error playing audio (resume then play):", e));
                         });
                     } else {
+                        // If context is already running, just play
                         audioElement.play().catch((e: Error) => console.error("Player.svelte reactive: Error playing audio:", e));
                     }
                 } else {
@@ -488,36 +489,6 @@
             goto(`/artist/${currentSong.primaryArtistId}`);
         } else {
             console.warn('Cannot navigate to artist: primaryArtistId is missing for the current song.');
-        }
-    }
-
-    function toggleShuffleLoopMode() {
-        if (!currentSong) return; // Disable if no song is playing
-
-        // This function cycles through three states:
-        // 1. Normal Playback (shuffle OFF, loop 'none')
-        // 2. Shuffle Mode (shuffle ON, loop 'none')
-        // 3. Loop One Mode (shuffle OFF, loop 'one')
-        // It uses playerStore.toggleShuffle() and playerStore.toggleLoopMode()
-        // assuming toggleLoopMode cycles 'none' -> 'all' -> 'one' -> 'none'.
-
-        if (isShuffling) {
-            // Currently in Shuffle Mode -> Switch to Loop One Mode
-            playerStore.toggleShuffle(); // Sets isShuffling to false
-            // Cycle loopMode to 'one'. If current loopMode is 'none', it takes two toggles.
-            playerStore.toggleLoopMode(); // 'none' -> 'all'
-            playerStore.toggleLoopMode(); // 'all' -> 'one'
-            console.log('Player.svelte: Switched from Shuffle to Loop One');
-        } else if (loopMode === 'one') {
-            // Currently in Loop One Mode -> Switch to Normal Playback
-            playerStore.toggleLoopMode(); // Sets loopMode to 'none'
-            // Shuffle should already be off, no need to toggleShuffle here.
-            console.log('Player.svelte: Switched from Loop One to Normal');
-        } else { // (loopMode === 'none' && !isShuffling), i.e., Normal Playback
-            // Currently in Normal Playback -> Switch to Shuffle Mode
-            playerStore.toggleShuffle(); // Sets isShuffling to true
-            // Loop mode should already be 'none', no action needed for loopMode.
-            console.log('Player.svelte: Switched from Normal to Shuffle');
         }
     }
 </script>
