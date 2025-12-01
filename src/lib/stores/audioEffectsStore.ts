@@ -24,9 +24,9 @@ export const defaultGenericReverbCustomSettings = {
 
 const AUDIO_SETTINGS_LOCAL_STORAGE_KEY = 'musify-audio-settings';
 
-// Constants for desired audio context parameters to influence buffer size
-const DESIRED_BUFFER_SIZE_SAMPLES = 256; // Target buffer length in samples, like FL Studio ASIO
-const DEFAULT_SAMPLE_RATE = 44100; // Common sample rate for calculating latency hint
+// Removed aggressive latency hints to improve performance on mobile devices.
+// const DESIRED_BUFFER_SIZE_SAMPLES = 256; 
+// const DEFAULT_SAMPLE_RATE = 44100;
 
 // ---------------------------
 // Types
@@ -297,7 +297,7 @@ const updateStereoWidener = (state: AudioEffectsState) => {
     }
 };
 
-const SPATIAL_AUDIO_WET_GAIN_COMPENSATION = 10.0; // ~+5dB boost. This compensates for the perceived volume drop from HRTF panning to better match the bypass volume.
+const SPATIAL_AUDIO_WET_GAIN_COMPENSATION = 10.5; // ~+3.5dB boost. A subtle boost to enhance the spatial effect without altering timbre.
 
 const updateSpatialAudioFade = (state: AudioEffectsState) => {
     if (!state.spatialWetGainNode || !state.spatialBypassGainNode || !state.audioContext) return;
@@ -584,16 +584,9 @@ export const audioEffectsStore = {
             return;
         }
 
-        // Calculate target latency in seconds based on desired buffer size and sample rate.
-        // Note: This is a hint; the browser may not use this exact buffer size depending on hardware
-        // and OS. Smaller buffers can lead to lower latency but higher CPU usage and potential cracking
-        // if the system cannot keep up reliably. It aims for performance akin to 256-sample ASIO buffers.
-        const targetLatencySeconds = DESIRED_BUFFER_SIZE_SAMPLES / DEFAULT_SAMPLE_RATE;
-
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
-            latencyHint: targetLatencySeconds, // Attempt to achieve 256 samples buffer length
-            sampleRate: DEFAULT_SAMPLE_RATE    // Specify sample rate
-        });
+        // Reverted to default AudioContext constructor for better mobile performance.
+        // Requesting a specific low latency can be too demanding for some devices.
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
         // Initial resume if suspended (e.g., due to autoplay policy)
         if (audioContext.state === 'suspended') {
             await audioContext.resume();
@@ -601,7 +594,6 @@ export const audioEffectsStore = {
         console.log(`AudioEffectsStore: AudioContext initialized. State: ${audioContext.state}, ` +
                     `Sample Rate: ${audioContext.sampleRate} Hz, ` +
                     `Base Latency: ${audioContext.baseLatency * 1000} ms.`);
-        console.log(`AudioEffectsStore: Requested buffer size ${DESIRED_BUFFER_SIZE_SAMPLES} samples.`);
 
 
         const sourceNode = audioContext.createMediaElementSource(audioElement);
@@ -680,8 +672,8 @@ export const audioEffectsStore = {
         console.log('AudioEffectsStore: DynamicsCompressorNode created.');
 
         const pannerNode = audioContext.createPanner();
-        // Use the HRTF model for high-quality binaural spatialization (best with headphones)
-        pannerNode.panningModel = 'HRTF';
+        // Use the 'equalpower' model for clear stereo panning without the filtering artifacts of HRTF.
+        pannerNode.panningModel = 'equalpower';
         pannerNode.distanceModel = 'inverse'; // More realistic distance falloff
         pannerNode.positionX.value = state.pannerPosition.x;
         pannerNode.positionY.value = state.pannerPosition.y;
