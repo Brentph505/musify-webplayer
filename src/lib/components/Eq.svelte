@@ -46,6 +46,7 @@
     export let loudnessNormalizationEnabled: boolean; // Two-way bound
     export let loudnessTarget: number; // Two-way bound
     export let momentaryLoudness: number; // One-way bound for display
+    export let isMobileDevice: boolean = false; // NEW: Prop to indicate if on a mobile device
 
     let irDropdownOpen: boolean = false;
     let reverbTypeDropdownOpen: boolean = false; // Still needed for the reverb type dropdown within the reverb card
@@ -345,6 +346,11 @@
             <span class="preset-desc">All Effects</span>
           </button>
         </div>
+        {#if isMobileDevice && performanceMode === 'high'}
+          <p class="mobile-performance-tip">
+            <Zap size={14} class="inline-icon" /> On mobile, 'High' performance mode may lead to audio issues. Consider 'Balanced' or 'Low' for stability.
+          </p>
+        {/if}
       </div>
     </div>
 
@@ -1166,5 +1172,23 @@
         background-color: #1DB954;
         color: #000;
         font-weight: bold;
+    }
+
+    /* NEW STYLE for mobile performance tip */
+    .mobile-performance-tip {
+        font-size: 0.75em;
+        color: #ffcc00; /* A warning yellow/orange */
+        background-color: #3a3000;
+        border-left: 3px solid #ffcc00;
+        padding: 8px 10px;
+        margin-top: 10px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+    }
+
+    .mobile-performance-tip .inline-icon {
+      color: #ffcc00;
     }
 </style>
