@@ -4,8 +4,9 @@
     import Sliders from 'lucide-svelte/icons/sliders';
     import Zap from 'lucide-svelte/icons/zap';
     import Ear from 'lucide-svelte/icons/ear';
-    import Gauge from 'lucide-svelte/icons/gauge'; // NEW: Import icon for Loudness
-    import Activity from 'lucide-svelte/icons/activity'; // NEW: Import icon for Performance
+    import Gauge from 'lucide-svelte/icons/gauge'; // Import icon for Loudness
+    import Activity from 'lucide-svelte/icons/activity'; // Import icon for Performance
+    import Expand from 'lucide-svelte/icons/expand'; // NEW: Icon for Stereo Widening
 
     const dispatch = createEventDispatcher(); // Initialize dispatcher for custom events
 
@@ -27,26 +28,29 @@
     export let reverbDamping: number; // Two-way bound
     export let reverbPreDelay: number; // Two-way bound
     export let reverbType: string = 'hall'; // Two-way bound
-    // NEW: Add props for reverb modulation
+    // Add props for reverb modulation
     export let reverbModulationRate: number; // Two-way bound
     export let reverbModulationDepth: number; // Two-way bound
-    // NEW: Add props for Dynamics Compressor
+    // Add props for Dynamics Compressor
     export let compressorEnabled: boolean; // Two-way bound
     export let compressorThreshold: number; // Two-way bound
     export let compressorKnee: number;     // Two-way bound
     export let compressorRatio: number;    // Two-way bound
     export let compressorAttack: number;   // Two-way bound
     export let compressorRelease: number;  // Two-way bound
-    // NEW: Add props for Spatial Audio (Panner)
+    // Add props for Spatial Audio (Panner)
     export let pannerPosition: { x: number; y: number; z: number }; // Two-way bound
     export let pannerAutomationEnabled: boolean; // Two-way bound
     export let pannerAutomationRate: number; // Two-way bound
     export let spatialAudioEnabled: boolean; // Two-way bound
-    // NEW: Add props for Loudness Normalization
+    // NEW: Add props for Stereo Widening
+    export let stereoWideningEnabled: boolean; // Two-way bound
+    export let stereoWideningAmount: number; // Two-way bound
+    // Add props for Loudness Normalization
     export let loudnessNormalizationEnabled: boolean; // Two-way bound
     export let loudnessTarget: number; // Two-way bound
     export let momentaryLoudness: number; // One-way bound for display
-    export let isMobileDevice: boolean = false; // NEW: Prop to indicate if on a mobile device
+    export let isMobileDevice: boolean = false; // Prop to indicate if on a mobile device
 
     let irDropdownOpen: boolean = false;
     let reverbTypeDropdownOpen: boolean = false; // Still needed for the reverb type dropdown within the reverb card
@@ -56,7 +60,8 @@
     let reverbCardOpen: boolean = false;
     let compressorCardOpen: boolean = false;
     let spatialAudioCardOpen: boolean = false;
-    let loudnessCardOpen: boolean = false; // NEW: UI state for Loudness card
+    let loudnessCardOpen: boolean = false; // UI state for Loudness card
+    let stereoWideningCardOpen: boolean = false; // NEW: UI state for Stereo Widening card
 
     // Available reverb types, including 'Custom'
     const reverbTypes = [
@@ -79,7 +84,7 @@
         { name: 'Jazz', gains: [4, 2, 0, -2, -3, -4] },
     ];
 
-    // NEW: Loudness Target Presets
+    // Loudness Target Presets
     const loudnessPresets = [
         { name: 'Spotify', value: -14 },
         { name: 'Apple Music', value: -16 },
@@ -198,7 +203,7 @@
         dispatch('setGenericReverbPreDelay', { preDelay });
     }
 
-    // NEW: Handlers for new reverb modulation parameters
+    // Handlers for new reverb modulation parameters
     function handleReverbModRateChange(event: Event) {
         const rate = (event.target as HTMLInputElement).valueAsNumber;
         reverbModulationRate = rate;
@@ -211,7 +216,7 @@
         dispatch('setGenericReverbModulationDepth', { depth });
     }
 
-    // NEW: Handlers for Dynamics Compressor parameters
+    // Handlers for Dynamics Compressor parameters
     function handleCompressorToggle(event: Event) {
         const enabled = (event.target as HTMLInputElement).checked;
         compressorEnabled = enabled;
@@ -248,7 +253,7 @@
         dispatch('setCompressorRelease', { release });
     }
 
-    // NEW: Handlers for Spatial Audio (Panner)
+    // Handlers for Spatial Audio (Panner)
     function handlePannerChange(axis: 'x' | 'y' | 'z', event: Event) {
         const value = (event.target as HTMLInputElement).valueAsNumber;
         // Update the bound prop to keep UI in sync
@@ -275,7 +280,20 @@
         dispatch('toggleSpatialAudio', { enabled });
     }
 
-    // NEW: Handlers for Loudness Normalization
+    // NEW: Handlers for Stereo Widening
+    function handleStereoWideningToggle(event: Event) {
+        const enabled = (event.target as HTMLInputElement).checked;
+        stereoWideningEnabled = enabled;
+        dispatch('toggleStereoWidening', { enabled });
+    }
+
+    function handleStereoWideningAmountChange(event: Event) {
+        const amount = (event.target as HTMLInputElement).valueAsNumber;
+        stereoWideningAmount = amount;
+        dispatch('setStereoWideningAmount', { amount });
+    }
+
+    // Handlers for Loudness Normalization
     function handleLoudnessNormalizationToggle(event: Event) {
         const enabled = (event.target as HTMLInputElement).checked;
         loudnessNormalizationEnabled = enabled;
@@ -309,7 +327,7 @@
 
 <div class="eq-scroll-wrapper">
   <div class="eq-controls">
-    <!-- NEW: Performance Mode Section -->
+    <!-- Performance Mode Section -->
     <div class="card">
       <div class="card-header">
         <span class="card-header-label">
@@ -596,6 +614,25 @@
               <span>{pannerPosition.z.toFixed(1)}</span>
             </div>
           {/if}
+        </div>
+      {/if}
+    </div>
+
+    <!-- NEW: Stereo Widening Section -->
+    <div class="card collapsible">
+      <button type="button" class="card-header" on:click={() => stereoWideningCardOpen = !stereoWideningCardOpen} disabled={performanceMode !== 'high'}>
+        <span class="card-header-label">
+          <Expand size={18} /> Stereo Widening
+        </span>
+        <input type="checkbox" on:click|stopPropagation bind:checked={stereoWideningEnabled} on:change={handleStereoWideningToggle} disabled={performanceMode !== 'high'} />
+      </button>
+      {#if stereoWideningCardOpen && performanceMode === 'high'}
+        <div class="card-body">
+          <div class="slider-control">
+            <span>Amount:</span>
+            <input type="range" min="0" max="1" step="0.01" bind:value={stereoWideningAmount} on:input={handleStereoWideningAmountChange} class="horizontal-slider" disabled={!stereoWideningEnabled}/>
+            <span>{(stereoWideningAmount * 100).toFixed(0)}%</span>
+          </div>
         </div>
       {/if}
     </div>

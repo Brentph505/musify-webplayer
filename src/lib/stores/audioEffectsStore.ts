@@ -24,7 +24,7 @@ export const defaultGenericReverbCustomSettings = {
 
 const AUDIO_SETTINGS_LOCAL_STORAGE_KEY = 'musify-audio-settings';
 
-// NEW: Constants for desired audio context parameters to influence buffer size
+// Constants for desired audio context parameters to influence buffer size
 const DESIRED_BUFFER_SIZE_SAMPLES = 256; // Target buffer length in samples, like FL Studio ASIO
 const DEFAULT_SAMPLE_RATE = 44100; // Common sample rate for calculating latency hint
 
@@ -60,6 +60,9 @@ export type AudioEffectsState = {
     pannerAutomationEnabled: boolean;
     pannerAutomationRate: number;
     spatialAudioEnabled: boolean;
+    stereoWideningEnabled: boolean; // NEW: Stereo Widening
+    stereoWideningAmount: number; // 0.0 to 1.0
+
     loudnessNormalizationEnabled: boolean;
     loudnessTarget: number; // In LUFS
     momentaryLoudness: number; // For UI display
@@ -83,19 +86,26 @@ export type AudioEffectsState = {
     analyserNode: AnalyserNode | null;
     compressorNode: DynamicsCompressorNode | null;
     pannerNode: PannerNode | null;
-    // NEW: Cross-fader nodes for spatial audio
+    // Cross-fader nodes for spatial audio
     spatialWetGainNode: GainNode | null;
     spatialBypassGainNode: GainNode | null;
-    // NEW: Loudness nodes
+    // NEW: Stereo Widening Nodes
+    stereoWidenerBypassGainNode: GainNode | null;
+    stereoWidenerWetGainNode: GainNode | null;
+    stereoWidenerSplitterNode: ChannelSplitterNode | null;
+    stereoWidenerDelayLNode: DelayNode | null;
+    stereoWidenerDelayRNode: DelayNode | null;
+    stereoWidenerMergerNode: ChannelMergerNode | null;
+    // Loudness nodes
     loudnessNormalizationGainNode: GainNode | null;
     loudnessMeterNode: AudioWorkletNode | null;
     masterLimiterNode: DynamicsCompressorNode | null;
 
-    // NEW: Reference to the HTMLAudioElement for direct control on suspend/resume
+    // Reference to the HTMLAudioElement for direct control on suspend/resume
     _audioElement: HTMLAudioElement | null;
     _wasPlayingBeforeSuspend: boolean; // Tracks if the audio element was playing before suspend
 
-    // NEW: Temporary storage for user's preferred settings when in 'balanced' or 'low' mode
+    // Temporary storage for user's preferred settings when in 'balanced' or 'low' mode
     _priorGenericReverbType: string | null;
     _priorGenericReverbEnabled: boolean | null;
     _priorCompressorSettings: {
@@ -109,7 +119,8 @@ export type AudioEffectsState = {
     _priorConvolverEnabled: boolean | null;
     _priorSpatialAudioEnabled: boolean | null;
     _priorLoudnessNormalizationEnabled: boolean | null;
-    _priorPannerAutomationEnabled: boolean | null; // NEW: Temporary storage for panner automation enabled state
+    _priorPannerAutomationEnabled: boolean | null;
+    _priorStereoWideningEnabled: boolean | null; // NEW: Temporary storage for stereo widening
 };
 
 // ---------------------------
@@ -144,6 +155,10 @@ const initialAudioEffectsState: AudioEffectsState = {
     pannerAutomationEnabled: false,
     pannerAutomationRate: 0.1,
     spatialAudioEnabled: true,
+    // NEW: Initialize Stereo Widening state
+    stereoWideningEnabled: false,
+    stereoWideningAmount: 0.0,
+
     loudnessNormalizationEnabled: false,
     loudnessTarget: -14, // Spotify's target
     momentaryLoudness: -70,
@@ -166,24 +181,32 @@ const initialAudioEffectsState: AudioEffectsState = {
     analyserNode: null,
     compressorNode: null,
     pannerNode: null,
-    // NEW: Cross-fader nodes for spatial audio
+    // Cross-fader nodes for spatial audio
     spatialWetGainNode: null,
     spatialBypassGainNode: null,
-    // NEW: Loudness nodes
+    // NEW: Initialize Stereo Widening Nodes
+    stereoWidenerBypassGainNode: null,
+    stereoWidenerWetGainNode: null,
+    stereoWidenerSplitterNode: null,
+    stereoWidenerDelayLNode: null,
+    stereoWidenerDelayRNode: null,
+    stereoWidenerMergerNode: null,
+    // Loudness nodes
     loudnessNormalizationGainNode: null,
     loudnessMeterNode: null,
     masterLimiterNode: null,
 
-    // NEW: Initialize temporary storage to null
+    // Initialize temporary storage to null
     _priorGenericReverbType: null,
     _priorGenericReverbEnabled: null,
     _priorCompressorSettings: null,
     _priorConvolverEnabled: null,
     _priorSpatialAudioEnabled: null,
     _priorLoudnessNormalizationEnabled: null,
-    _priorPannerAutomationEnabled: null, // NEW: Initialize temporary storage to null
+    _priorPannerAutomationEnabled: null,
+    _priorStereoWideningEnabled: null, // NEW: Initialize stereo widening prior state
 
-    // NEW: Initialize audio element reference
+    // Initialize audio element reference
     _audioElement: null,
     _wasPlayingBeforeSuspend: false, // Default to false
 };
@@ -226,12 +249,52 @@ const saveToLocalStorage = (state: AudioEffectsState) => {
         pannerAutomationEnabled: state.pannerAutomationEnabled,
         pannerAutomationRate: state.pannerAutomationRate,
         spatialAudioEnabled: state.spatialAudioEnabled,
+        // NEW: Save Stereo Widening settings
+        stereoWideningEnabled: state.stereoWideningEnabled,
+        stereoWideningAmount: state.stereoWideningAmount,
         loudnessNormalizationEnabled: state.loudnessNormalizationEnabled,
         loudnessTarget: state.loudnessTarget
         // Note: _prior... settings are not saved to localStorage as they are temporary
     };
     localStorage.setItem(AUDIO_SETTINGS_LOCAL_STORAGE_KEY, JSON.stringify(settingsToSave));
     console.log('AudioEffectsStore: Saved audio settings to localStorage.');
+};
+
+// NEW: Helper function for Stereo Widening
+const updateStereoWidener = (state: AudioEffectsState) => {
+    const {
+        audioContext,
+        stereoWideningEnabled,
+        stereoWideningAmount,
+        stereoWidenerBypassGainNode,
+        stereoWidenerWetGainNode,
+        stereoWidenerDelayLNode,
+        stereoWidenerDelayRNode
+    } = state;
+
+    if (!audioContext || !stereoWidenerBypassGainNode || !stereoWidenerWetGainNode || !stereoWidenerDelayLNode || !stereoWidenerDelayRNode) {
+        console.warn('AudioEffectsStore: Stereo Widener nodes not ready for update.');
+        return;
+    }
+
+    const now = audioContext.currentTime;
+    const rampTime = now + 0.05; // 50ms ramp
+
+    if (stereoWideningEnabled) {
+        // Cross-fade between dry (bypass) and wet (widened) signal
+        stereoWidenerBypassGainNode.gain.linearRampToValueAtTime(1.0 - stereoWideningAmount, rampTime);
+        // A slight boost on the wet signal can enhance the perception of widening
+        const wetGainBoost = 1.0 + (stereoWideningAmount * 0.5); // Max 1.5x boost at full amount
+        stereoWidenerWetGainNode.gain.linearRampToValueAtTime(stereoWideningAmount * wetGainBoost, rampTime);
+        
+        // Ensure delays are set (these are fixed, but good to ensure they are active)
+        stereoWidenerDelayLNode.delayTime.setValueAtTime(0.010, now); // 10ms
+        stereoWidenerDelayRNode.delayTime.setValueAtTime(0.020, now); // 20ms
+    } else {
+        // Bypass the widener: full dry, no wet
+        stereoWidenerBypassGainNode.gain.linearRampToValueAtTime(1.0, rampTime);
+        stereoWidenerWetGainNode.gain.linearRampToValueAtTime(0.0, rampTime);
+    }
 };
 
 const SPATIAL_AUDIO_WET_GAIN_COMPENSATION = 10.0; // ~+5dB boost. This compensates for the perceived volume drop from HRTF panning to better match the bypass volume.
@@ -376,7 +439,7 @@ const pannerAutomationLoop = () => {
     const time = Date.now() / 1000;
 
     const newX = Math.sin(time * speed) * radius;
-    // NEW: Add Y-axis automation for vertical movement
+    // Add Y-axis automation for vertical movement
     const newY = Math.sin(time * speed * 0.5) * (radius / 2); // Slower movement, smaller amplitude for Y
     const newZ = Math.cos(time * speed) * radius;
 
@@ -438,7 +501,7 @@ const stopPannerAutomation = () => {
     }
 };
 
-// NEW: Helper function to detect if it's likely a desktop environment
+// Helper function to detect if it's likely a desktop environment
 const isDesktopDevice = () => {
     if (typeof window === 'undefined') return false;
     // Check for pointer: fine (mouse/trackpad) and hover: hover (not a touch-primary device)
@@ -446,7 +509,7 @@ const isDesktopDevice = () => {
     return window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 };
 
-// NEW: Function to handle visibility change for performance optimization
+// Function to handle visibility change for performance optimization
 const handleVisibilityChange = () => {
     const state = getCurrentState();
     if (!state.audioContext || !state._audioElement) return; // Ensure audioElement is also available
@@ -462,7 +525,7 @@ const handleVisibilityChange = () => {
                     console.log('AudioEffectsStore: AudioContext suspended due to page hiding (mobile optimization).');
                 }).catch(e => console.error('AudioEffectsStore: Error suspending AudioContext:', e));
 
-                // NEW: Also pause the HTMLAudioElement
+                // Also pause the HTMLAudioElement
                 if (!state._audioElement.paused) {
                     state._audioElement.pause();
                     store.update(s => ({ ...s, _wasPlayingBeforeSuspend: true })); // Mark that it was playing
@@ -485,7 +548,7 @@ const handleVisibilityChange = () => {
                 // Reapply all effect settings after resuming context
                 audioEffectsStore.updateAllEffects();
 
-                // NEW: If audio was playing before suspend, resume it
+                // If audio was playing before suspend, resume it
                 if (state._wasPlayingBeforeSuspend) {
                     state._audioElement?.play().then(() => {
                         console.log('AudioEffectsStore: HTMLAudioElement resumed after page became visible.');
@@ -632,6 +695,17 @@ export const audioEffectsStore = {
         const spatialWetGainNode = audioContext.createGain();
         const spatialBypassGainNode = audioContext.createGain();
 
+        // NEW: Stereo Widening Nodes
+        const stereoWidenerBypassGainNode = audioContext.createGain();
+        const stereoWidenerWetGainNode = audioContext.createGain();
+        const stereoWidenerSplitterNode = audioContext.createChannelSplitter(2); // Split into 2 channels
+        const stereoWidenerDelayLNode = audioContext.createDelay(0.020); // Max 20ms delay
+        const stereoWidenerDelayRNode = audioContext.createDelay(0.020); // Max 20ms delay
+        stereoWidenerDelayLNode.delayTime.value = 0.010; // 10ms default delay for left
+        stereoWidenerDelayRNode.delayTime.value = 0.020; // 20ms default delay for right
+        const stereoWidenerMergerNode = audioContext.createChannelMerger(2); // Merge back to 2 channels
+        console.log('AudioEffectsStore: Stereo Widening nodes created.');
+
         // Add a master limiter at the end of the chain to prevent clipping
         const masterLimiterNode = audioContext.createDynamicsCompressor();
         masterLimiterNode.threshold.value = -0.5; // Catch peaks just before 0dB
@@ -692,6 +766,9 @@ export const audioEffectsStore = {
             combFilters, allPassFilters, reverbLFOs, reverbModGains, compressorNode,
             pannerNode,
             spatialWetGainNode, spatialBypassGainNode,
+            // Add Stereo Widening nodes to store
+            stereoWidenerBypassGainNode, stereoWidenerWetGainNode,
+            stereoWidenerSplitterNode, stereoWidenerDelayLNode, stereoWidenerDelayRNode, stereoWidenerMergerNode,
             // Add loudness nodes to store
             loudnessNormalizationGainNode, loudnessMeterNode,
             // Add limiter node to store
@@ -744,7 +821,8 @@ export const audioEffectsStore = {
                 newState._priorConvolverEnabled = s.convolverEnabled;
                 newState._priorSpatialAudioEnabled = s.spatialAudioEnabled;
                 newState._priorLoudnessNormalizationEnabled = s.loudnessNormalizationEnabled;
-                newState._priorPannerAutomationEnabled = s.pannerAutomationEnabled; // NEW: Save panner automation state
+                newState._priorPannerAutomationEnabled = s.pannerAutomationEnabled;
+                newState._priorStereoWideningEnabled = s.stereoWideningEnabled; // NEW: Save stereo widening state
             }
 
             // Define specific algorithmic settings for 'low' and 'balanced' modes
@@ -772,7 +850,8 @@ export const audioEffectsStore = {
                     newState.compressorEnabled = false; // Forced off
                     newState.spatialAudioEnabled = false;
                     newState.loudnessNormalizationEnabled = false;
-                    newState.pannerAutomationEnabled = false; // NEW: Disable panner automation in low mode
+                    newState.pannerAutomationEnabled = false;
+                    newState.stereoWideningEnabled = false; // NEW: Disable stereo widening in low mode
 
                     // Apply minimal/off generic reverb algorithm
                     newState.genericReverbDecay = lowGenericReverbAlgorithm.decay;
@@ -793,11 +872,12 @@ export const audioEffectsStore = {
                     break;
 
                 case 'balanced':
-                    // Disable the heaviest effects: IR reverb, spatial audio, and loudness meter
+                    // Disable the heaviest effects: IR reverb, spatial audio, loudness meter, stereo widening
                     newState.convolverEnabled = false;
                     newState.spatialAudioEnabled = false;
                     newState.loudnessNormalizationEnabled = false;
-                    newState.pannerAutomationEnabled = false; // NEW: Disable panner automation in balanced mode
+                    newState.pannerAutomationEnabled = false;
+                    newState.stereoWideningEnabled = false; // NEW: Disable stereo widening in balanced mode
 
                     // Ensure generic reverb and compressor are enabled in balanced mode
                     newState.genericReverbEnabled = true; // Forced on
@@ -861,8 +941,11 @@ export const audioEffectsStore = {
                     if (oldMode !== 'high' && newState._priorLoudnessNormalizationEnabled !== null) {
                         newState.loudnessNormalizationEnabled = newState._priorLoudnessNormalizationEnabled;
                     }
-                    if (oldMode !== 'high' && newState._priorPannerAutomationEnabled !== null) { // NEW: Restore panner automation state
+                    if (oldMode !== 'high' && newState._priorPannerAutomationEnabled !== null) {
                         newState.pannerAutomationEnabled = newState._priorPannerAutomationEnabled;
+                    }
+                    if (oldMode !== 'high' && newState._priorStereoWideningEnabled !== null) { // NEW: Restore stereo widening state
+                        newState.stereoWideningEnabled = newState._priorStereoWideningEnabled;
                     }
 
                     // Clear prior settings after restoration
@@ -872,7 +955,8 @@ export const audioEffectsStore = {
                     newState._priorConvolverEnabled = null;
                     newState._priorSpatialAudioEnabled = null;
                     newState._priorLoudnessNormalizationEnabled = null;
-                    newState._priorPannerAutomationEnabled = null; // NEW: Clear panner automation prior state
+                    newState._priorPannerAutomationEnabled = null;
+                    newState._priorStereoWideningEnabled = null; // NEW: Clear stereo widening prior state
 
                     // Important: `configureGenericReverb` needs the updated state.
                     // This call might need to be outside `store.update` if it uses `dispatch` or relies on
@@ -939,6 +1023,8 @@ export const audioEffectsStore = {
             !s.combFilters.length || !s.allPassFilters.length || !s.convolverBoostGainNode ||
             !s.reverbLFOs.length || !s.reverbModGains.length || !s.compressorNode || !s.pannerNode ||
             !s.spatialWetGainNode || !s.spatialBypassGainNode || // Check for new spatial nodes
+            !s.stereoWidenerBypassGainNode || !s.stereoWidenerWetGainNode || !s.stereoWidenerSplitterNode ||
+            !s.stereoWidenerDelayLNode || !s.stereoWidenerDelayRNode || !s.stereoWidenerMergerNode || // Check for stereo widening nodes
             !s.loudnessNormalizationGainNode || !s.loudnessMeterNode || // Check loudness nodes
             !s.masterLimiterNode) { // Check limiter node
             console.error('AudioEffectsStore: Cannot setup audio graph, some required nodes are null/missing.');
@@ -991,7 +1077,7 @@ export const audioEffectsStore = {
         s.convolverBoostGainNode.connect(s.compressorNode); // Connect the boosted wet path
         s.genericReverbOutputGain.connect(s.compressorNode);
 
-        // 6. Post-Processing Chain: Compressor -> Spatial Audio Cross-fader -> Loudness -> Analyser -> Master
+        // 6. Post-Processing Chain: Compressor -> Spatial Audio Cross-fader -> Loudness -> Stereo Widening -> Analyser -> Master
 
         // The loudness meter is always connected in parallel after the compressor to measure its output
         s.compressorNode.connect(s.loudnessMeterNode);
@@ -1012,7 +1098,21 @@ export const audioEffectsStore = {
         // --- End Cross-fader ---
 
         // The two paths merge at the loudnessNormalizationGainNode, which then continues the chain.
-        s.loudnessNormalizationGainNode.connect(s.analyserNode);
+        // NEW: Insert Stereo Widening AFTER Loudness Normalization
+        s.loudnessNormalizationGainNode.connect(s.stereoWidenerBypassGainNode); // Dry path for widener
+        s.loudnessNormalizationGainNode.connect(s.stereoWidenerSplitterNode); // Input for wet widener path
+
+        // Stereo Widening wet path connections
+        s.stereoWidenerSplitterNode.connect(s.stereoWidenerDelayLNode, 0, 0); // Left channel to left delay
+        s.stereoWidenerSplitterNode.connect(s.stereoWidenerDelayRNode, 1, 0); // Right channel to right delay
+        s.stereoWidenerDelayLNode.connect(s.stereoWidenerMergerNode, 0, 0); // Left delay to merger's left input
+        s.stereoWidenerDelayRNode.connect(s.stereoWidenerMergerNode, 0, 1); // Right delay to merger's right input
+        s.stereoWidenerMergerNode.connect(s.stereoWidenerWetGainNode); // Merger output to wet gain
+
+        // Merge widened and bypassed signals before analyser
+        s.stereoWidenerBypassGainNode.connect(s.analyserNode);
+        s.stereoWidenerWetGainNode.connect(s.analyserNode);
+
         // The convolverBoostGainNode has been moved to the convolver's wet path to prevent it from boosting the entire mix.
         s.analyserNode.connect(s.masterGainNode);
         // The masterGainNode now goes to a final limiter to prevent any clipping.
@@ -1033,6 +1133,7 @@ export const audioEffectsStore = {
         updatePanner(state); // Update panner manual values, automation is separate
         updateSpatialAudioFade(state);
         updateLoudnessNormalization(state);
+        updateStereoWidener(state); // NEW: Update stereo widener
 
         // Manage panner automation:
         // - Always stop if disabled by user or if context is closing
@@ -1276,6 +1377,16 @@ export const audioEffectsStore = {
     toggleSpatialAudio: (enabled: boolean) => {
         store.update(s => ({ ...s, spatialAudioEnabled: enabled }));
         audioEffectsStore.updateAllEffects(); // This handles the cross-fade logic
+    },
+
+    // --- Stereo Widening Management ---
+    toggleStereoWidening: (enabled: boolean) => {
+        store.update(s => ({ ...s, stereoWideningEnabled: enabled }));
+        audioEffectsStore.updateAllEffects();
+    },
+    setStereoWideningAmount: (amount: number) => {
+        store.update(s => ({ ...s, stereoWideningAmount: amount }));
+        audioEffectsStore.updateAllEffects();
     },
 
     // --- Loudness Normalization Management ---

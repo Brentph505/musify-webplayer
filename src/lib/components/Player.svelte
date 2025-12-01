@@ -58,6 +58,9 @@
     $: pannerAutomationEnabled = audioEffectsState?.pannerAutomationEnabled ?? false;
     $: pannerAutomationRate = audioEffectsState?.pannerAutomationRate ?? 0.1;
     $: spatialAudioEnabled = audioEffectsState?.spatialAudioEnabled ?? true;
+    // NEW: Bind stereo widening state from the store
+    $: stereoWideningEnabled = audioEffectsState?.stereoWideningEnabled ?? false;
+    $: stereoWideningAmount = audioEffectsState?.stereoWideningAmount ?? 0.5;
     // NEW: Bind loudness state from the store
     $: loudnessNormalizationEnabled = audioEffectsState?.loudnessNormalizationEnabled ?? false;
     $: loudnessTarget = audioEffectsState?.loudnessTarget ?? -14;
@@ -67,6 +70,7 @@
     const PLAYER_UI_LOCAL_STORAGE_KEY = 'musify-player-ui-settings';
     let showEq: boolean = false;
     let audioEffectsInitialized: boolean = false; // NEW: Track if audio effects are initialized
+    let isMobileDevice: boolean = false; // NEW: Track if on a mobile device
 
     // FADE EFFECT CONSTANT
     // Removed: const FADE_DURATION_SECONDS = 0.5; // Duration of the fade effect in seconds
@@ -200,6 +204,11 @@
 
     onMount(async () => {
         loadPlayerUiSettings();
+
+        // NEW: Detect mobile device on mount
+        if (typeof window !== 'undefined') {
+            isMobileDevice = /Mobi|Android/i.test(navigator.userAgent);
+        }
 
         const unsubscribePlayer = playerStore.subscribe((state: PlayerState) => {
             currentSong = state.currentSong;
@@ -800,11 +809,13 @@
             bind:pannerAutomationEnabled={pannerAutomationEnabled}
             bind:pannerAutomationRate={pannerAutomationRate}
             bind:spatialAudioEnabled={spatialAudioEnabled}
-            
+            bind:stereoWideningEnabled={stereoWideningEnabled}
+            bind:stereoWideningAmount={stereoWideningAmount}
             bind:loudnessNormalizationEnabled={loudnessNormalizationEnabled}
             bind:loudnessTarget={loudnessTarget}
             momentaryLoudness={momentaryLoudness}
             performanceMode={performanceMode}
+            isMobileDevice={isMobileDevice}
 
             on:updateEqGain={(e) => audioEffectsStore.updateEqGain(e.detail.index, e.detail.value)}
             on:applyEqPreset={(e) => audioEffectsStore.applyEqPreset(e.detail.gains)}
@@ -829,6 +840,8 @@
             on:togglePannerAutomation={(e) => audioEffectsStore.togglePannerAutomation(e.detail.enabled)}
             on:setPannerAutomationRate={(e) => audioEffectsStore.setPannerAutomationRate(e.detail.rate)}
             on:toggleSpatialAudio={(e) => audioEffectsStore.toggleSpatialAudio(e.detail.enabled)}
+            on:toggleStereoWidening={(e) => audioEffectsStore.toggleStereoWidening(e.detail.enabled)}
+            on:setStereoWideningAmount={(e) => audioEffectsStore.setStereoWideningAmount(e.detail.amount)}
             on:toggleLoudnessNormalization={(e) => audioEffectsStore.toggleLoudnessNormalization(e.detail.enabled)}
             on:setLoudnessTarget={(e) => audioEffectsStore.setLoudnessTarget(e.detail.target)}
             on:setPerformanceMode={(e) => audioEffectsStore.setPerformanceMode(e.detail.mode)}
