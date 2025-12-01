@@ -101,10 +101,6 @@ export type AudioEffectsState = {
     loudnessMeterNode: AudioWorkletNode | null;
     masterLimiterNode: DynamicsCompressorNode | null;
 
-    // Reference to the HTMLAudioElement for direct control on suspend/resume
-    _audioElement: HTMLAudioElement | null;
-    _wasPlayingBeforeSuspend: boolean; // Tracks if the audio element was playing before suspend
-
     // Temporary storage for user's preferred settings when in 'balanced' or 'low' mode
     _priorGenericReverbType: string | null;
     _priorGenericReverbEnabled: boolean | null;
@@ -120,7 +116,9 @@ export type AudioEffectsState = {
     _priorSpatialAudioEnabled: boolean | null;
     _priorLoudnessNormalizationEnabled: boolean | null;
     _priorPannerAutomationEnabled: boolean | null;
-    _priorStereoWideningEnabled: boolean | null; // NEW: Temporary storage for stereo widening
+    _priorStereoWideningEnabled: boolean | null; // NEW: Initialize stereo widening prior state
+    _audioElement: HTMLAudioElement | null; // Added for internal tracking of the audio element
+    _wasPlayingBeforeSuspend: boolean; // Added for tracking playback state during suspend/resume
 };
 
 // ---------------------------
@@ -213,8 +211,9 @@ const initialAudioEffectsState: AudioEffectsState = {
 
 const store = writable<AudioEffectsState>(initialAudioEffectsState);
 let pannerAutomationIntervalId: number | null = null;
-// Store for the visibility change listener reference to remove it later
-let visibilityChangeListener: (() => void) | null = null;
+let pannerUiUpdateCounter = 0;
+const PANNER_UI_UPDATE_INTERVAL = 4; // Update UI every 4 audio ticks (200ms) for performance.
+let saveSettingsDebounceTimer: number | null = null;
 
 // ---------------------------
 // Helper Functions
@@ -451,11 +450,16 @@ const pannerAutomationLoop = () => {
     state.pannerNode.positionY.linearRampToValueAtTime(newY, rampTime); // Apply Y-axis automation
     state.pannerNode.positionZ.linearRampToValueAtTime(newZ, rampTime);
 
-    // Update the store value so the UI reflects the change.
-    store.update((s) => ({
-        ...s,
-        pannerPosition: { ...s.pannerPosition, x: newX, y: newY, z: newZ } // Update Y in store
-    }));
+    // Throttled store update for performance. The audio parameters above are updated smoothly regardless.
+    pannerUiUpdateCounter++;
+    if (pannerUiUpdateCounter >= PANNER_UI_UPDATE_INTERVAL) {
+        pannerUiUpdateCounter = 0;
+        // Update the store value so the UI reflects the change.
+        store.update((s) => ({
+            ...s,
+            pannerPosition: { ...s.pannerPosition, x: newX, y: newY, z: newZ } // Update Y in store
+        }));
+    }
 };
 
 const startPannerAutomation = () => {
@@ -475,6 +479,7 @@ const startPannerAutomation = () => {
             state.pannerNode.positionY.cancelScheduledValues(now); // Cancel Y as well
             state.pannerNode.positionZ.cancelScheduledValues(now);
         }
+        pannerUiUpdateCounter = PANNER_UI_UPDATE_INTERVAL - 1; // Prime counter for immediate UI update on first run.
         pannerAutomationLoop(); // Run once immediately to set the initial position
         pannerAutomationIntervalId = setInterval(pannerAutomationLoop, PANNER_AUTOMATION_INTERVAL_MS) as unknown as number;
     }
@@ -501,52 +506,6 @@ const stopPannerAutomation = () => {
     }
 };
 
-// Helper function to detect if it's likely a desktop environment is no longer needed.
-
-// Function to handle visibility change for performance optimization
-const handleVisibilityChange = () => {
-    const state = getCurrentState();
-    if (!state.audioContext || !state._audioElement) return;
-
-    if (document.visibilityState === 'hidden') {
-        // Always suspend when hidden to save resources, especially on mobile.
-        if (state.audioContext.state === 'running') {
-            state.audioContext.suspend().then(() => {
-                console.log('AudioEffectsStore: AudioContext suspended due to page hiding.');
-            }).catch(e => console.error('AudioEffectsStore: Error suspending AudioContext:', e));
-
-            // Also pause the HTMLAudioElement
-            if (!state._audioElement.paused) {
-                state._audioElement.pause();
-                store.update(s => ({ ...s, _wasPlayingBeforeSuspend: true })); // Mark that it was playing
-                console.log('AudioEffectsStore: HTMLAudioElement paused due to page hiding.');
-            }
-        }
-        // Always stop panner automation when hidden to prevent background processing.
-        stopPannerAutomation();
-    } else if (document.visibilityState === 'visible') {
-        // Page is visible, resume the AudioContext if it was suspended
-        if (state.audioContext.state === 'suspended') {
-            state.audioContext.resume().then(() => {
-                console.log('AudioEffectsStore: AudioContext resumed due to page becoming visible.');
-                // Reapply all effect settings after resuming context
-                audioEffectsStore.updateAllEffects();
-
-                // If audio was playing before suspend, resume it
-                if (state._wasPlayingBeforeSuspend) {
-                    state._audioElement?.play().then(() => {
-                        console.log('AudioEffectsStore: HTMLAudioElement resumed after page became visible.');
-                    }).catch(e => console.error('AudioEffectsStore: Error resuming HTMLAudioElement:', e));
-                    store.update(s => ({ ...s, _wasPlayingBeforeSuspend: false })); // Reset flag
-                }
-            }).catch(e => console.error('AudioEffectsStore: Error resuming AudioContext:', e));
-        } else {
-            // If context was already running, just ensure all effects are updated.
-            audioEffectsStore.updateAllEffects();
-        }
-    }
-};
-
 // ---------------------------
 // Public API for the audio effects store
 // ---------------------------
@@ -567,9 +526,10 @@ export const audioEffectsStore = {
             return;
         }
 
-        // Reverted to default AudioContext constructor for better mobile performance.
-        // Requesting a specific low latency can be too demanding for some devices.
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        // Use 'playback' latency hint to optimize for power consumption on mobile/laptops.
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+            latencyHint: 'playback'
+        });
         // Initial resume if suspended (e.g., due to autoplay policy)
         if (audioContext.state === 'suspended') {
             await audioContext.resume();
@@ -748,22 +708,11 @@ export const audioEffectsStore = {
             loudnessNormalizationGainNode, loudnessMeterNode,
             // Add limiter node to store
             masterLimiterNode,
-            _audioElement: audioElement, // Store reference to the HTMLAudioElement
-            _wasPlayingBeforeSuspend: !audioElement.paused // Initial state of playing
         });
-        console.log('AudioEffectsStore: Store updated with new audio nodes and audioElement reference.');
+        console.log('AudioEffectsStore: Store updated with new audio nodes.');
 
         audioEffectsStore.setupAudioGraph();
         console.log('AudioEffectsStore: Audio graph connections established.');
-
-        // Add visibility change listener for performance optimization
-        if (typeof document !== 'undefined') {
-            visibilityChangeListener = handleVisibilityChange; // Store reference
-            document.addEventListener('visibilitychange', visibilityChangeListener);
-            // Call it once to set initial state correctly based on current visibility
-            // This is crucial to suspend AC if app starts in background (e.g., tab opened in background on mobile)
-            handleVisibilityChange();
-        }
 
         await audioEffectsStore.fetchAvailableIrs();
         await audioEffectsStore.loadImpulseResponse(getCurrentState().selectedIrUrl);
@@ -975,12 +924,6 @@ export const audioEffectsStore = {
         });
         stopPannerAutomation(); // Ensure automation loop is stopped on destroy
 
-        // Remove visibility change listener on destroy
-        if (typeof document !== 'undefined' && visibilityChangeListener) {
-            document.removeEventListener('visibilitychange', visibilityChangeListener);
-            visibilityChangeListener = null;
-        }
-
         store.set(initialAudioEffectsState); // Reset to initial state
         console.log('AudioEffectsStore: Store reset.');
     },
@@ -1110,10 +1053,9 @@ export const audioEffectsStore = {
         updateLoudnessNormalization(state);
         updateStereoWidener(state); // NEW: Update stereo widener
 
-        // Manage panner automation: Only run if enabled, context is running, and page is visible.
+        // Manage panner automation: Only run if enabled and context is running.
         const shouldRunAutomation = state.pannerAutomationEnabled &&
-                                     state.audioContext?.state === 'running' &&
-                                     document.visibilityState === 'visible';
+                                     state.audioContext?.state === 'running';
 
         if (shouldRunAutomation) {
             startPannerAutomation();
@@ -1121,7 +1063,7 @@ export const audioEffectsStore = {
             stopPannerAutomation();
         }
 
-        saveToLocalStorage(state); // Save settings after all effects are updated
+        audioEffectsStore.saveSettings(); // Debounced save
     },
 
     /**
@@ -1148,10 +1090,15 @@ export const audioEffectsStore = {
     },
 
     /**
-     * Saves current audio effects settings to localStorage.
+     * Saves current audio effects settings to localStorage, with debouncing.
      */
     saveSettings: () => {
-        saveToLocalStorage(getCurrentState());
+        if (saveSettingsDebounceTimer) {
+            clearTimeout(saveSettingsDebounceTimer);
+        }
+        saveSettingsDebounceTimer = setTimeout(() => {
+            saveToLocalStorage(getCurrentState());
+        }, 500) as unknown as number;
     },
 
     // --- EQ Management ---
