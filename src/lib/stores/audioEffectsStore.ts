@@ -215,6 +215,9 @@ let pannerUiUpdateCounter = 0;
 const PANNER_UI_UPDATE_INTERVAL = 4; // Update UI every 4 audio ticks (200ms) for performance.
 let saveSettingsDebounceTimer: number | null = null;
 
+// NEW: track whether reverb LFOs were started (OscillatorNode.start() is one-time)
+let reverbLFOsStarted = false;
+
 // ---------------------------
 // Helper Functions
 // ---------------------------
@@ -506,6 +509,21 @@ const stopPannerAutomation = () => {
     }
 };
 
+// Helper to start reverb LFOs once (OscillatorNode.start() can only be called once)
+const ensureStartReverbLFOs = () => {
+    if (reverbLFOsStarted) return;
+    const s = getCurrentState();
+    if (!s.audioContext) return;
+    s.reverbLFOs.forEach(lfo => {
+        try {
+            lfo.start();
+        } catch (e) {
+            // start() may throw if already started; ignore
+        }
+    });
+    reverbLFOsStarted = true;
+};
+
 // ---------------------------
 // Public API for the audio effects store
 // ---------------------------
@@ -572,6 +590,7 @@ export const audioEffectsStore = {
             const delay = audioContext.createDelay(1.0);
             delay.delayTime.value = time;
             const feedback = audioContext.createGain();
+            feedback.gain.value = 0; // SAFETY: start feedback at 0 to avoid initial feedback burst
             const filter = audioContext.createBiquadFilter();
             filter.type = 'lowpass';
             filter.Q.value = 0.7;
@@ -585,10 +604,11 @@ export const audioEffectsStore = {
             const lfo = audioContext.createOscillator();
             lfo.type = 'sine';
             lfo.frequency.value = lfoFrequencies[i];
-            lfo.start();
+            // NOTE: do NOT start() LFOs here to avoid unnecessary CPU at init.
+            // They will be started lazily when the generic reverb is first enabled.
 
             const modGain = audioContext.createGain();
-            modGain.gain.value = state.genericReverbModulationDepth;
+            modGain.gain.value = 0; // SAFETY: start modulation gain at 0 until reverb is enabled
 
             lfo.connect(modGain);
             // Connect LFO -> ModGain -> DelayTime AudioParam for modulation
@@ -910,18 +930,22 @@ export const audioEffectsStore = {
         // Close AudioContext first
         if (state.audioContext) {
             state.audioContext.close().then(() => {
-                console.log('AudioEffectsStore: AudioContext closed.');
+                console.log('AudioEffectsStore: AudioContext closed.' );
             }).catch(e => console.error('AudioEffectsStore: Error closing AudioContext:', e));
         }
 
         // Stop all LFOs explicitly on destroy to free up resources
-        state.reverbLFOs.forEach(lfo => {
-            try {
-                lfo.stop();
-            } catch (e) {
-                console.warn('AudioEffectsStore: Error stopping LFO, might already be stopped:', e);
-            }
-        });
+        // Only stop if they were actually started
+        if (reverbLFOsStarted) {
+            state.reverbLFOs.forEach(lfo => {
+                try {
+                    lfo.stop();
+                } catch (e) {
+                    console.warn('AudioEffectsStore: Error stopping LFO, might already be stopped:', e);
+                }
+            });
+            reverbLFOsStarted = false;
+        }
         stopPannerAutomation(); // Ensure automation loop is stopped on destroy
 
         store.set(initialAudioEffectsState); // Reset to initial state
@@ -1135,6 +1159,8 @@ export const audioEffectsStore = {
     // --- Generic Reverb Management ---
     toggleGenericReverb: (enabled: boolean) => {
         store.update(s => ({ ...s, genericReverbEnabled: enabled }));
+        // If enabling for the first time, start LFOs lazily to reduce startup cost
+        if (enabled) ensureStartReverbLFOs();
         audioEffectsStore.updateAllEffects();
     },
     setGenericReverbMix: (mix: number) => {
