@@ -571,23 +571,25 @@
             <span>{pannerAutomationRate.toFixed(2)}</span>
           </div>
 
-          <hr class="border-gray-700 my-2">
+          {#if !pannerAutomationEnabled}
+            <hr class="border-gray-700 my-2">
 
-          <div class="slider-control">
-            <span>X (Left/Right):</span>
-            <input type="range" min="-10" max="10" step="0.1" bind:value={pannerPosition.x} on:input={(e) => handlePannerChange('x', e)} class="horizontal-slider" disabled={pannerAutomationEnabled || !spatialAudioEnabled}/>
-            <span>{pannerPosition.x.toFixed(1)}</span>
-          </div>
-          <div class="slider-control">
-            <span>Y (Up/Down):</span>
-            <input type="range" min="-10" max="10" step="0.1" bind:value={pannerPosition.y} on:input={(e) => handlePannerChange('y', e)} class="horizontal-slider" disabled={pannerAutomationEnabled || !spatialAudioEnabled}/>
-            <span>{pannerPosition.y.toFixed(1)}</span>
-          </div>
-          <div class="slider-control">
-            <span>Z (Forward/Back):</span>
-            <input type="range" min="-10" max="10" step="0.1" bind:value={pannerPosition.z} on:input={(e) => handlePannerChange('z', e)} class="horizontal-slider" disabled={pannerAutomationEnabled || !spatialAudioEnabled}/>
-            <span>{pannerPosition.z.toFixed(1)}</span>
-          </div>
+            <div class="slider-control">
+              <span>X (Left/Right):</span>
+              <input type="range" min="-10" max="10" step="0.1" bind:value={pannerPosition.x} on:input={(e) => handlePannerChange('x', e)} class="horizontal-slider" disabled={!spatialAudioEnabled}/>
+              <span>{pannerPosition.x.toFixed(1)}</span>
+            </div>
+            <div class="slider-control">
+              <span>Y (Up/Down):</span>
+              <input type="range" min="-10" max="10" step="0.1" bind:value={pannerPosition.y} on:input={(e) => handlePannerChange('y', e)} class="horizontal-slider" disabled={!spatialAudioEnabled}/>
+              <span>{pannerPosition.y.toFixed(1)}</span>
+            </div>
+            <div class="slider-control">
+              <span>Z (Forward/Back):</span>
+              <input type="range" min="-10" max="10" step="0.1" bind:value={pannerPosition.z} on:input={(e) => handlePannerChange('z', e)} class="horizontal-slider" disabled={!spatialAudioEnabled}/>
+              <span>{pannerPosition.z.toFixed(1)}</span>
+            </div>
+          {/if}
         </div>
       {/if}
     </div>

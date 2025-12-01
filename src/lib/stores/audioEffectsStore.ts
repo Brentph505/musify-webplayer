@@ -492,7 +492,10 @@ export const audioEffectsStore = {
             return;
         }
 
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        // Use latencyHint: 'balanced' to prioritize stable audio playback over ultra-low latency.
+        // This can help prevent cracking noises and improve performance by allowing the browser
+        // to use a larger internal buffer size if needed, depending on the system capabilities.
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ latencyHint: 'balanced' });
         // Initial resume if suspended (e.g., due to autoplay policy)
         if (audioContext.state === 'suspended') {
             await audioContext.resume();
