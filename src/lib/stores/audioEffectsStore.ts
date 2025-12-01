@@ -87,6 +87,10 @@ export type AudioEffectsState = {
     loudnessMeterNode: AudioWorkletNode | null;
     masterLimiterNode: DynamicsCompressorNode | null;
 
+    // NEW: Reference to the HTMLAudioElement for direct control on suspend/resume
+    _audioElement: HTMLAudioElement | null;
+    _wasPlayingBeforeSuspend: boolean; // Tracks if the audio element was playing before suspend
+
     // NEW: Temporary storage for user's preferred settings when in 'balanced' or 'low' mode
     _priorGenericReverbType: string | null;
     _priorGenericReverbEnabled: boolean | null;
@@ -172,6 +176,10 @@ const initialAudioEffectsState: AudioEffectsState = {
     _priorConvolverEnabled: null,
     _priorSpatialAudioEnabled: null,
     _priorLoudnessNormalizationEnabled: null,
+
+    // NEW: Initialize audio element reference
+    _audioElement: null,
+    _wasPlayingBeforeSuspend: false, // Default to false
 };
 
 const store = writable<AudioEffectsState>(initialAudioEffectsState);
@@ -243,7 +251,7 @@ const applyEq = (state: AudioEffectsState) => {
 };
 
 const updateConvolver = (state: AudioEffectsState) => {
-    const { convolverEnabled, impulseResponseBuffer, convolverNode, convolverDryGainNode, convolverWetGainNode, convolverBoostGainNode, convolverMix } = state;
+    const { convolverEnabled, impulseResponseBuffer, convolverNode, convolverDryGainNode, convolverWetGainNode, convolverMix } = state;
     if (!convolverNode || !convolverDryGainNode || !convolverWetGainNode) {
         console.warn('AudioEffectsStore: Convolver nodes not ready for update.');
         return;
@@ -435,7 +443,7 @@ const isDesktopDevice = () => {
 // NEW: Function to handle visibility change for performance optimization
 const handleVisibilityChange = () => {
     const state = getCurrentState();
-    if (!state.audioContext) return;
+    if (!state.audioContext || !state._audioElement) return; // Ensure audioElement is also available
 
     // We decide whether to suspend/resume AudioContext based on device type
     const isDesktop = isDesktopDevice();
@@ -446,7 +454,14 @@ const handleVisibilityChange = () => {
             if (state.audioContext.state === 'running') {
                 state.audioContext.suspend().then(() => {
                     console.log('AudioEffectsStore: AudioContext suspended due to page hiding (mobile optimization).');
-                });
+                }).catch(e => console.error('AudioEffectsStore: Error suspending AudioContext:', e));
+
+                // NEW: Also pause the HTMLAudioElement
+                if (!state._audioElement.paused) {
+                    state._audioElement.pause();
+                    store.update(s => ({ ...s, _wasPlayingBeforeSuspend: true })); // Mark that it was playing
+                    console.log('AudioEffectsStore: HTMLAudioElement paused due to page hiding.');
+                }
             }
             // On mobile-like, also stop panner automation to save resources
             stopPannerAutomation();
@@ -463,7 +478,15 @@ const handleVisibilityChange = () => {
                 console.log('AudioEffectsStore: AudioContext resumed due to page becoming visible.');
                 // Reapply all effect settings after resuming context
                 audioEffectsStore.updateAllEffects();
-            });
+
+                // NEW: If audio was playing before suspend, resume it
+                if (state._wasPlayingBeforeSuspend) {
+                    state._audioElement?.play().then(() => {
+                        console.log('AudioEffectsStore: HTMLAudioElement resumed after page became visible.');
+                    }).catch(e => console.error('AudioEffectsStore: Error resuming HTMLAudioElement:', e));
+                    store.update(s => ({ ...s, _wasPlayingBeforeSuspend: false })); // Reset flag
+                }
+            }).catch(e => console.error('AudioEffectsStore: Error resuming AudioContext:', e));
         } else {
             // If context was already running (e.g., on desktop, or dev tools open, then close),
             // just ensure all effects are updated (e.g., to restart automation if needed).
@@ -656,9 +679,11 @@ export const audioEffectsStore = {
             // Add loudness nodes to store
             loudnessNormalizationGainNode, loudnessMeterNode,
             // Add limiter node to store
-            masterLimiterNode
+            masterLimiterNode,
+            _audioElement: audioElement, // Store reference to the HTMLAudioElement
+            _wasPlayingBeforeSuspend: !audioElement.paused // Initial state of playing
         });
-        console.log('AudioEffectsStore: Store updated with new audio nodes.');
+        console.log('AudioEffectsStore: Store updated with new audio nodes and audioElement reference.');
 
         audioEffectsStore.setupAudioGraph();
         console.log('AudioEffectsStore: Audio graph connections established.');
