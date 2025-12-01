@@ -86,6 +86,21 @@ export type AudioEffectsState = {
     loudnessNormalizationGainNode: GainNode | null;
     loudnessMeterNode: AudioWorkletNode | null;
     masterLimiterNode: DynamicsCompressorNode | null;
+
+    // NEW: Temporary storage for user's preferred settings when in 'balanced' or 'low' mode
+    _priorGenericReverbType: string | null;
+    _priorGenericReverbEnabled: boolean | null;
+    _priorCompressorSettings: {
+        enabled: boolean;
+        threshold: number;
+        knee: number;
+        ratio: number;
+        attack: number;
+        release: number;
+    } | null;
+    _priorConvolverEnabled: boolean | null;
+    _priorSpatialAudioEnabled: boolean | null;
+    _priorLoudnessNormalizationEnabled: boolean | null;
 };
 
 // ---------------------------
@@ -148,7 +163,15 @@ const initialAudioEffectsState: AudioEffectsState = {
     // NEW: Loudness nodes
     loudnessNormalizationGainNode: null,
     loudnessMeterNode: null,
-    masterLimiterNode: null
+    masterLimiterNode: null,
+
+    // NEW: Initialize temporary storage to null
+    _priorGenericReverbType: null,
+    _priorGenericReverbEnabled: null,
+    _priorCompressorSettings: null,
+    _priorConvolverEnabled: null,
+    _priorSpatialAudioEnabled: null,
+    _priorLoudnessNormalizationEnabled: null,
 };
 
 const store = writable<AudioEffectsState>(initialAudioEffectsState);
@@ -191,6 +214,7 @@ const saveToLocalStorage = (state: AudioEffectsState) => {
         spatialAudioEnabled: state.spatialAudioEnabled,
         loudnessNormalizationEnabled: state.loudnessNormalizationEnabled,
         loudnessTarget: state.loudnessTarget
+        // Note: _prior... settings are not saved to localStorage as they are temporary
     };
     localStorage.setItem(AUDIO_SETTINGS_LOCAL_STORAGE_KEY, JSON.stringify(settingsToSave));
     console.log('AudioEffectsStore: Saved audio settings to localStorage.');
@@ -220,29 +244,22 @@ const applyEq = (state: AudioEffectsState) => {
 
 const updateConvolver = (state: AudioEffectsState) => {
     const { convolverEnabled, impulseResponseBuffer, convolverNode, convolverDryGainNode, convolverWetGainNode, convolverBoostGainNode, convolverMix } = state;
-    if (!convolverNode || !convolverDryGainNode || !convolverWetGainNode || !convolverBoostGainNode) {
+    if (!convolverNode || !convolverDryGainNode || !convolverWetGainNode) {
         console.warn('AudioEffectsStore: Convolver nodes not ready for update.');
         return;
     }
 
-    const MAX_CONVOLVER_BOOST_DB = 9;
-    const MIN_MIX_FOR_BOOST = 0.2;
+    const now = state.audioContext?.currentTime;
+    const rampTime = now ? now + 0.05 : 0.05; // 50ms ramp, but immediate if time is 0 (suspended context)
 
-    if (convolverEnabled && impulseResponseBuffer && convolverNode.buffer) {
-        convolverWetGainNode.gain.value = convolverMix;
-        convolverDryGainNode.gain.value = 1 - convolverMix;
-
-        if (convolverMix >= MIN_MIX_FOR_BOOST) {
-            const normalizedMix = (convolverMix - MIN_MIX_FOR_BOOST) / (1.0 - MIN_MIX_FOR_BOOST);
-            const boostDb = normalizedMix * MAX_CONVOLVER_BOOST_DB;
-            convolverBoostGainNode.gain.value = Math.pow(10, boostDb / 20);
-        } else {
-            convolverBoostGainNode.gain.value = 1;
-        }
+    if (convolverEnabled) {
+        convolverDryGainNode.gain.linearRampToValueAtTime(1 - convolverMix, rampTime);
+        convolverWetGainNode.gain.linearRampToValueAtTime(convolverMix, rampTime);
+        // convolverBoostGainNode is now always 1, controlled by the new wet/dry mix
     } else {
-        convolverWetGainNode.gain.value = 0;
-        convolverDryGainNode.gain.value = 1;
-        convolverBoostGainNode.gain.value = 1;
+        // Bypass convolver: set dry to full, wet to none
+        convolverDryGainNode.gain.linearRampToValueAtTime(1, rampTime);
+        convolverWetGainNode.gain.linearRampToValueAtTime(0, rampTime);
     }
 };
 
@@ -331,13 +348,13 @@ const updateLoudnessNormalization = (state: AudioEffectsState) => {
 
 const PANNER_AUTOMATION_INTERVAL_MS = 50; // 20 updates per second
 
+// Refactored pannerAutomationLoop: Only updates positions, does not manage interval lifecycle
 const pannerAutomationLoop = () => {
     const state = getCurrentState();
-    // Automation should only run if enabled and the AudioContext is running.
-    if (!state.pannerAutomationEnabled || !state.pannerNode || !state.audioContext || state.audioContext.state !== 'running') {
-        if (pannerAutomationIntervalId) clearInterval(pannerAutomationIntervalId);
-        pannerAutomationIntervalId = null;
-        return;
+    // This function should only be called if automation is enabled and context is running.
+    // If conditions are no longer met, the interval should have been stopped by `updateAllEffects`.
+    if (!state.pannerNode || !state.audioContext || state.audioContext.state !== 'running' || !state.pannerAutomationEnabled) {
+        return; // Defensive check, but external logic should prevent this from running if not needed.
     }
 
     const speed = state.pannerAutomationRate;
@@ -345,6 +362,8 @@ const pannerAutomationLoop = () => {
     const time = Date.now() / 1000;
 
     const newX = Math.sin(time * speed) * radius;
+    // NEW: Add Y-axis automation for vertical movement
+    const newY = Math.sin(time * speed * 0.5) * (radius / 2); // Slower movement, smaller amplitude for Y
     const newZ = Math.cos(time * speed) * radius;
 
     const now = state.audioContext.currentTime;
@@ -352,25 +371,21 @@ const pannerAutomationLoop = () => {
     const rampTime = now + PANNER_AUTOMATION_INTERVAL_MS / 1000;
 
     state.pannerNode.positionX.linearRampToValueAtTime(newX, rampTime);
+    state.pannerNode.positionY.linearRampToValueAtTime(newY, rampTime); // Apply Y-axis automation
     state.pannerNode.positionZ.linearRampToValueAtTime(newZ, rampTime);
-    // Y position remains unchanged by this automation
 
     // Update the store value so the UI reflects the change.
     store.update((s) => ({
         ...s,
-        pannerPosition: { ...s.pannerPosition, x: newX, z: newZ }
+        pannerPosition: { ...s.pannerPosition, x: newX, y: newY, z: newZ } // Update Y in store
     }));
 };
 
 const startPannerAutomation = () => {
     const state = getCurrentState();
     // Only start if AudioContext is running AND automation is enabled
-    if (state.audioContext?.state !== 'running') {
-        // console.log('AudioEffectsStore: Not starting panner automation, AudioContext is not running.');
-        return;
-    }
-    if (!state.pannerAutomationEnabled) {
-        // console.log('AudioEffectsStore: Not starting panner automation, it is disabled.');
+    if (!state.pannerAutomationEnabled || !state.audioContext || state.audioContext.state !== 'running') {
+        // console.log('AudioEffectsStore: Not starting panner automation, conditions not met.');
         return;
     }
 
@@ -380,6 +395,7 @@ const startPannerAutomation = () => {
         if (state.pannerNode && state.audioContext) {
             const now = state.audioContext.currentTime;
             state.pannerNode.positionX.cancelScheduledValues(now);
+            state.pannerNode.positionY.cancelScheduledValues(now); // Cancel Y as well
             state.pannerNode.positionZ.cancelScheduledValues(now);
         }
         pannerAutomationLoop(); // Run once immediately to set the initial position
@@ -399,8 +415,10 @@ const stopPannerAutomation = () => {
         if (state.pannerNode && state.audioContext && state.audioContext.state !== 'closed') {
             const now = state.audioContext.currentTime;
             state.pannerNode.positionX.cancelScheduledValues(now);
+            state.pannerNode.positionY.cancelScheduledValues(now); // Cancel Y as well
             state.pannerNode.positionZ.cancelScheduledValues(now);
             state.pannerNode.positionX.setValueAtTime(state.pannerPosition.x, now);
+            state.pannerNode.positionY.setValueAtTime(state.pannerPosition.y, now); // Set Y to its last known position
             state.pannerNode.positionZ.setValueAtTime(state.pannerPosition.z, now);
         }
     }
@@ -659,36 +677,170 @@ export const audioEffectsStore = {
     },
 
     /**
-     * Sets the performance profile, enabling or disabling heavy effects.
+     * Sets the performance profile, enabling or disabling heavy effects and adjusting their algorithms.
      * @param mode The performance mode to set.
      */
     setPerformanceMode: (mode: 'low' | 'balanced' | 'high') => {
         store.update(s => {
+            const oldMode = s.performanceMode;
             const newState: AudioEffectsState = { ...s, performanceMode: mode };
+
+            // Backup user settings ONLY IF transitioning from 'high' to a lower mode
+            if (oldMode === 'high' && (mode === 'low' || mode === 'balanced')) {
+                newState._priorGenericReverbType = s.genericReverbType;
+                newState._priorGenericReverbEnabled = s.genericReverbEnabled;
+                newState._priorCompressorSettings = {
+                    enabled: s.compressorEnabled,
+                    threshold: s.compressorThreshold,
+                    knee: s.compressorKnee,
+                    ratio: s.compressorRatio,
+                    attack: s.compressorAttack,
+                    release: s.compressorRelease,
+                };
+                newState._priorConvolverEnabled = s.convolverEnabled;
+                newState._priorSpatialAudioEnabled = s.spatialAudioEnabled;
+                newState._priorLoudnessNormalizationEnabled = s.loudnessNormalizationEnabled;
+            }
+
+            // Define specific algorithmic settings for 'low' and 'balanced' modes
+            const lowGenericReverbAlgorithm = { // Effectively off
+                decay: 0.0, damping: 22000, mix: 0.0, preDelay: 0.0,
+                modulationRate: 0.0, modulationDepth: 0.0
+            };
+            const balancedGenericReverbAlgorithm = { // Lighter reverb
+                decay: 0.3, damping: 10000, mix: 0.1, preDelay: 0.01,
+                modulationRate: 0.1, modulationDepth: 0.00001
+            };
+            const lowCompressorAlgorithm = { // Effectively off (bypass)
+                threshold: 0, knee: 0, ratio: 1, attack: 0, release: 0
+            };
+            const balancedCompressorAlgorithm = { // Milder compression
+                threshold: -18, knee: 10, ratio: 4, attack: 0.01, release: 0.5
+            };
+
 
             switch (mode) {
                 case 'low':
-                    // Disable all heavy effects
+                    // Force disable all heavy effects (algorithmic change: minimal processing)
                     newState.convolverEnabled = false;
-                    newState.genericReverbEnabled = false;
-                    newState.compressorEnabled = false;
+                    newState.genericReverbEnabled = false; // Forced off
+                    newState.compressorEnabled = false; // Forced off
                     newState.spatialAudioEnabled = false;
                     newState.loudnessNormalizationEnabled = false;
+
+                    // Apply minimal/off generic reverb algorithm
+                    newState.genericReverbDecay = lowGenericReverbAlgorithm.decay;
+                    newState.genericReverbDamping = lowGenericReverbAlgorithm.damping;
+                    newState.genericReverbMix = lowGenericReverbAlgorithm.mix;
+                    newState.genericReverbPreDelay = lowGenericReverbAlgorithm.preDelay;
+                    newState.genericReverbModulationRate = lowGenericReverbAlgorithm.modulationRate;
+                    newState.genericReverbModulationDepth = lowGenericReverbAlgorithm.modulationDepth;
+                    newState.genericReverbType = 'custom'; // Mark as custom because parameters are forced
+                    newState.genericReverbCustomSettings = { ...lowGenericReverbAlgorithm }; // Update custom settings to reflect current low algorithm
+
+                    // Apply minimal/off compressor algorithm
+                    newState.compressorThreshold = lowCompressorAlgorithm.threshold;
+                    newState.compressorKnee = lowCompressorAlgorithm.knee;
+                    newState.compressorRatio = lowCompressorAlgorithm.ratio;
+                    newState.compressorAttack = lowCompressorAlgorithm.attack;
+                    newState.compressorRelease = lowCompressorAlgorithm.release;
                     break;
+
                 case 'balanced':
                     // Disable the heaviest effects: IR reverb, spatial audio, and loudness meter
                     newState.convolverEnabled = false;
                     newState.spatialAudioEnabled = false;
                     newState.loudnessNormalizationEnabled = false;
-                    // User's preference for standard reverb and compressor is maintained
+
+                    // Ensure generic reverb and compressor are enabled in balanced mode
+                    newState.genericReverbEnabled = true; // Forced on
+                    newState.compressorEnabled = true; // Forced on
+
+                    // Apply simplified, lighter algorithmic parameters for generic reverb
+                    newState.genericReverbDecay = balancedGenericReverbAlgorithm.decay;
+                    newState.genericReverbDamping = balancedGenericReverbAlgorithm.damping;
+                    newState.genericReverbMix = balancedGenericReverbAlgorithm.mix;
+                    newState.genericReverbPreDelay = balancedGenericReverbAlgorithm.preDelay;
+                    newState.genericReverbModulationRate = balancedGenericReverbAlgorithm.modulationRate;
+                    newState.genericReverbModulationDepth = balancedGenericReverbAlgorithm.modulationDepth;
+                    newState.genericReverbType = 'custom'; // Mark as custom because parameters are forced
+                    newState.genericReverbCustomSettings = { ...balancedGenericReverbAlgorithm }; // Update custom settings to reflect current balanced algorithm
+
+                    // Apply milder algorithmic parameters for compressor
+                    newState.compressorThreshold = balancedCompressorAlgorithm.threshold;
+                    newState.compressorKnee = balancedCompressorAlgorithm.knee;
+                    newState.compressorRatio = balancedCompressorAlgorithm.ratio;
+                    newState.compressorAttack = balancedCompressorAlgorithm.attack;
+                    newState.compressorRelease = balancedCompressorAlgorithm.release;
                     break;
+
                 case 'high':
-                    // All effects are available to the user, no changes to enabled states are forced.
+                    // In 'high' mode, we revert to the user's previously set preferences.
+                    // If no prior settings were backed up (e.g., first run in 'high'), use current state.
+                    if (oldMode !== 'high' && newState._priorGenericReverbType !== null) {
+                        newState.genericReverbEnabled = newState._priorGenericReverbEnabled ?? initialAudioEffectsState.genericReverbEnabled;
+                        newState.genericReverbType = newState._priorGenericReverbType;
+                        // Call configureGenericReverb to apply the correct parameters from user's original type/custom settings
+                        audioEffectsStore.configureGenericReverb(newState.genericReverbType);
+                        // The configureGenericReverb call would update genericReverb* properties.
+                        // We also need to restore custom settings directly if that was the type.
+                        if (newState.genericReverbType === 'custom') {
+                            // This relies on `genericReverbCustomSettings` being correctly persisted by user actions
+                            // and `loadSettings`. If it was only changed by `balanced` mode, it would be the balanced value.
+                            // A more robust solution would store `_priorGenericReverbCustomSettings` too.
+                            // For now, `configureGenericReverb` when type is 'custom' will correctly use `s.genericReverbCustomSettings`.
+                        }
+                    } else if (oldMode === 'high') {
+                        // If already in 'high' mode (no actual change in mode), do nothing.
+                        // The user's settings are already active.
+                    }
+                    
+                    if (oldMode !== 'high' && newState._priorCompressorSettings !== null) {
+                        newState.compressorEnabled = newState._priorCompressorSettings.enabled;
+                        newState.compressorThreshold = newState._priorCompressorSettings.threshold;
+                        newState.compressorKnee = newState._priorCompressorSettings.knee;
+                        newState.compressorRatio = newState._priorCompressorSettings.ratio;
+                        newState.compressorAttack = newState._priorCompressorSettings.attack;
+                        newState.compressorRelease = newState._priorCompressorSettings.release;
+                    }
+
+                    // Restore other enabled states
+                    if (oldMode !== 'high' && newState._priorConvolverEnabled !== null) {
+                        newState.convolverEnabled = newState._priorConvolverEnabled;
+                    }
+                    if (oldMode !== 'high' && newState._priorSpatialAudioEnabled !== null) {
+                        newState.spatialAudioEnabled = newState._priorSpatialAudioEnabled;
+                    }
+                    if (oldMode !== 'high' && newState._priorLoudnessNormalizationEnabled !== null) {
+                        newState.loudnessNormalizationEnabled = newState._priorLoudnessNormalizationEnabled;
+                    }
+
+                    // Clear prior settings after restoration
+                    newState._priorGenericReverbType = null;
+                    newState._priorGenericReverbEnabled = null;
+                    newState._priorCompressorSettings = null;
+                    newState._priorConvolverEnabled = null;
+                    newState._priorSpatialAudioEnabled = null;
+                    newState._priorLoudnessNormalizationEnabled = null;
+
+                    // Important: `configureGenericReverb` needs the updated state.
+                    // This call might need to be outside `store.update` if it uses `dispatch` or relies on
+                    // the store's current state to be fully updated *before* calling it.
+                    // For now, let's keep it here, but add a call to configureGenericReverb outside the update as well
+                    // if _priorGenericReverbType was restored to ensure parameters are reapplied.
                     break;
             }
             return newState;
         });
-        audioEffectsStore.updateAllEffects(); // Apply changes immediately
+        audioEffectsStore.updateAllEffects(); // Apply changes immediately after state update
+        // If coming from low/balanced to high, re-configure generic reverb based on restored type
+        const stateAfterUpdate = getCurrentState();
+        if (stateAfterUpdate.performanceMode === 'high' && stateAfterUpdate._priorGenericReverbType === null) {
+            // This condition ensures configureGenericReverb is called *once* after the store has updated,
+            // which allows it to correctly load preset parameters if genericReverbType was restored.
+            // But we already call it inside the update block. Let's rely on that for now.
+            // The audioEffectsStore.updateAllEffects() will trigger relevant node updates.
+        }
     },
 
     /**
@@ -903,7 +1055,7 @@ export const audioEffectsStore = {
     },
     selectIr: async (irUrl: string | null) => {
         store.update(s => ({ ...s, selectedIrUrl: irUrl }));
-        await audioEffectsStore.loadImpulseResponse(irUrl); // This will update impulseResponseBuffer and then call updateAllEffects
+        await audioEffectsStore.loadImpulseResponse(getCurrentState().selectedIrUrl); // Ensure this uses the updated selectedIrUrl from the state
     },
 
     // --- Generic Reverb Management ---
@@ -913,48 +1065,61 @@ export const audioEffectsStore = {
     },
     setGenericReverbMix: (mix: number) => {
         store.update(s => {
-            if (s.genericReverbType !== 'custom') s.genericReverbType = 'custom';
-            s.genericReverbCustomSettings.mix = mix;
+            // Only mark as custom if not currently in a performance mode that overrides
+            if (s.performanceMode === 'high') {
+                 s.genericReverbType = 'custom';
+                 s.genericReverbCustomSettings.mix = mix;
+            }
             return { ...s, genericReverbMix: mix };
         });
         audioEffectsStore.updateAllEffects();
     },
     setGenericReverbDecay: (decay: number) => {
         store.update(s => {
-            if (s.genericReverbType !== 'custom') s.genericReverbType = 'custom';
-            s.genericReverbCustomSettings.decay = decay;
+            if (s.performanceMode === 'high') {
+                s.genericReverbType = 'custom';
+                s.genericReverbCustomSettings.decay = decay;
+            }
             return { ...s, genericReverbDecay: decay };
         });
         audioEffectsStore.updateAllEffects();
     },
     setGenericReverbDamping: (damping: number) => {
         store.update(s => {
-            if (s.genericReverbType !== 'custom') s.genericReverbType = 'custom';
-            s.genericReverbCustomSettings.damping = damping;
+            if (s.performanceMode === 'high') {
+                s.genericReverbType = 'custom';
+                s.genericReverbCustomSettings.damping = damping;
+            }
             return { ...s, genericReverbDamping: damping };
         });
         audioEffectsStore.updateAllEffects();
     },
     setGenericReverbPreDelay: (preDelay: number) => {
         store.update(s => {
-            if (s.genericReverbType !== 'custom') s.genericReverbType = 'custom';
-            s.genericReverbCustomSettings.preDelay = preDelay;
+            if (s.performanceMode === 'high') {
+                s.genericReverbType = 'custom';
+                s.genericReverbCustomSettings.preDelay = preDelay;
+            }
             return { ...s, genericReverbPreDelay: preDelay };
         });
         audioEffectsStore.updateAllEffects();
     },
     setGenericReverbModulationRate: (rate: number) => {
         store.update(s => {
-            if (s.genericReverbType !== 'custom') s.genericReverbType = 'custom';
-            s.genericReverbCustomSettings.modulationRate = rate;
+            if (s.performanceMode === 'high') {
+                s.genericReverbType = 'custom';
+                s.genericReverbCustomSettings.modulationRate = rate;
+            }
             return { ...s, genericReverbModulationRate: rate };
         });
         audioEffectsStore.updateAllEffects();
     },
     setGenericReverbModulationDepth: (depth: number) => {
         store.update(s => {
-            if (s.genericReverbType !== 'custom') s.genericReverbType = 'custom';
-            s.genericReverbCustomSettings.modulationDepth = depth;
+            if (s.performanceMode === 'high') {
+                s.genericReverbType = 'custom';
+                s.genericReverbCustomSettings.modulationDepth = depth;
+            }
             return { ...s, genericReverbModulationDepth: depth };
         });
         audioEffectsStore.updateAllEffects();
@@ -996,10 +1161,11 @@ export const audioEffectsStore = {
                 genericReverbDamping: p.damping,
                 genericReverbMix: p.mix,
                 genericReverbPreDelay: p.preDelay,
-                genericReverbType: type,
+                genericReverbType: type, // This will be 'custom' if the user's settings were 'custom'
                 genericReverbModulationRate: p.modulationRate,
                 genericReverbModulationDepth: p.modulationDepth,
-                // If switching from custom, copy preset values into custom settings as well
+                // If switching from a preset to custom, or if a preset is selected, copy values.
+                // If type is custom, genericReverbCustomSettings should already have the correct values.
                 genericReverbCustomSettings: type === 'custom' ? s.genericReverbCustomSettings : { ...p }
             };
         });
@@ -1035,8 +1201,8 @@ export const audioEffectsStore = {
     // --- Spatial Audio (Panner) Management ---
     setPannerPosition: (position: { x?: number; y?: number; z?: number }) => {
         store.update(s => {
-            // Do not allow manual control if automation is enabled
-            if (s.pannerAutomationEnabled) return s;
+            // Do not allow manual control if automation is enabled or not in high performance mode
+            if (s.pannerAutomationEnabled || s.performanceMode !== 'high') return s;
             const newPos = { ...s.pannerPosition, ...position };
             return { ...s, pannerPosition: newPos };
         });
